@@ -51,6 +51,8 @@ Cada carpeta de ejemplo es autocontenida e incluye:
 - El **payload formatter** (`decoder_ttn.js`) para pegar en la consola de TTN
   cuando el ejemplo envía datos binarios empaquetados.
 
-## Autor
+## Autor y licencia
 
 **Edgar Landívar** — «LoRaWAN para todos», 2ª edición.
+
+El código de este repositorio se publica bajo licencia [MIT](LICENSE).
