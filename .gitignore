@@ -1,0 +1,6 @@
+# Credenciales reales de cada nodo: nunca se suben al repositorio.
+# Copia arduino_secrets.h.example a arduino_secrets.h y pon ahí tus claves.
+arduino_secrets.h
+
+# macOS
+.DS_Store
