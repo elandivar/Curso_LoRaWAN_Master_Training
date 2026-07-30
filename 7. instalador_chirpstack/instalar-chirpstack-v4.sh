@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
-# Instalador interactivo de ChirpStack v4 para Debian / Ubuntu.
-# Diseñado para Raspberry Pi OS / Debian ARM64, pero también funciona en amd64.
+# Instalador interactivo de ChirpStack v4 para Yubox Gateway OS.
+#
+# Exclusivo para la imagen Yubox gwOS (Raspberry Pi): aprovecha el Gateway
+# Bridge que la imagen ya trae (binario en /usr/local/bin y unit de systemd),
+# autodetecta la región/sub-banda configurada en la radio del gateway y, al
+# final, ofrece apuntar la radio al ChirpStack recién instalado.
 #
 # Instala y configura:
 #   - PostgreSQL + pg_trgm
 #   - Redis
 #   - Mosquitto (broker MQTT local)
 #   - ChirpStack v4
-#   - ChirpStack Gateway Bridge (opcional, Semtech UDP)
-#
-# No modifica automáticamente global_conf.json / local_conf.json del Packet Forwarder.
+#   - Gateway Bridge de la imagen (config local: UDP 1700 -> MQTT local)
 
 set -Eeuo pipefail
 IFS=$'\n\t'
@@ -168,14 +170,17 @@ source /etc/os-release
 
 ARCH="$(dpkg --print-architecture 2>/dev/null || true)"
 case "$ARCH" in
-  arm64|armhf|amd64) ;;
+  arm64) ;;
   *) warn "Arquitectura no probada por este script: ${ARCH:-desconocida}." ;;
 esac
 
-case "${ID:-}" in
-  debian|ubuntu|raspbian) ;;
-  *) warn "Distribución no probada: ${PRETTY_NAME:-desconocida}." ;;
-esac
+# Este instalador es exclusivo para Yubox Gateway OS: depende del Gateway
+# Bridge que la imagen trae (binario + unit) y de sus herramientas.
+GWB_BIN="/usr/local/bin/chirpstack-gateway-bridge"
+GWB_UNIT="/etc/systemd/system/chirpstack-gateway-bridge.service"
+YUBOX_BACKHAUL="/usr/local/sbin/yubox-backhaul"
+[[ -d /etc/yubox && -x "$GWB_BIN" && -f "$GWB_UNIT" ]] \
+  || die "Este instalador es solo para la imagen Yubox Gateway OS (no encuentro sus componentes)."
 
 printf '\n%sInstalador interactivo de ChirpStack v4%s\n' "$BOLD" "$RESET"
 printf 'Sistema: %s | Arquitectura: %s\n\n' "${PRETTY_NAME:-desconocido}" "${ARCH:-desconocida}"
@@ -218,29 +223,11 @@ else
   API_HOST="127.0.0.1"
 fi
 
-if ask_yes_no "¿Instalar Gateway Bridge para un Semtech UDP Packet Forwarder?" yes; then
-  INSTALL_GWB="yes"
-
-  if ask_yes_no "¿El Packet Forwarder corre en esta misma Raspberry Pi?" yes; then
-    PF_LOCAL="yes"
-    UDP_HOST="127.0.0.1"
-  else
-    PF_LOCAL="no"
-    UDP_HOST="0.0.0.0"
-    warn "Semtech UDP no cifra ni autentica el tráfico. No expongas el puerto directamente a Internet."
-  fi
-
-  while true; do
-    UDP_PORT="$(ask_value "Puerto UDP del Gateway Bridge" "1700")"
-    [[ "$UDP_PORT" =~ ^[0-9]+$ ]] && (( UDP_PORT >= 1 && UDP_PORT <= 65535 )) && break
-    warn "Introduce un puerto entre 1 y 65535."
-  done
-else
-  INSTALL_GWB="no"
-  PF_LOCAL="no"
-  UDP_HOST=""
-  UDP_PORT=""
-fi
+# En Yubox gwOS la radio y ChirpStack conviven en el mismo equipo: el Gateway
+# Bridge de la imagen se configura siempre, escuchando solo en localhost, en
+# el puerto al que apunta el modo "Semtech UDP directo" del gateway.
+UDP_HOST="127.0.0.1"
+UDP_PORT="1700"
 
 printf '\n'
 info "Instalando dependencias..."
@@ -321,16 +308,14 @@ printf '%s\n' \
 
 root apt-get update
 
-PACKAGES=(chirpstack)
-if [[ "$INSTALL_GWB" == "yes" ]]; then
-  PACKAGES+=(chirpstack-gateway-bridge)
-fi
-root env DEBIAN_FRONTEND=noninteractive apt-get install -y "${PACKAGES[@]}"
+# Solo el paquete chirpstack: el Gateway Bridge NO se instala por apt porque
+# la imagen Yubox ya trae binario y unit propios; instalar el paquete además
+# crea un usuario/directorio (gatewaybridge, 0750) que rompe los permisos de
+# la unit de la imagen (User=chirpstack).
+root env DEBIAN_FRONTEND=noninteractive apt-get install -y chirpstack
 
 root systemctl stop chirpstack 2>/dev/null || true
-if [[ "$INSTALL_GWB" == "yes" ]]; then
-  root systemctl stop chirpstack-gateway-bridge 2>/dev/null || true
-fi
+root systemctl stop chirpstack-gateway-bridge 2>/dev/null || true
 
 # ---------- Selección dinámica de región ----------
 
@@ -359,10 +344,34 @@ done
 
 (( ${#REGION_IDS[@]} > 0 )) || die "No fue posible leer las regiones instaladas."
 
+# La región por defecto se autodetecta de la radio del gateway: región por el
+# nombre del global_conf y sub-banda por la frecuencia de radio_0 (mismo
+# cálculo que usa la interfaz web de la imagen). Si algo falla, au915_1.
+GW_REGION_ID="$(python3 - <<'PY' 2>/dev/null || true
+import glob, json, os
+files = sorted(glob.glob("/opt/yubox-gw/packet_forwarder/global_conf.json.sx1250.*"))
+if files:
+    path = files[0]
+    region = os.path.basename(path).split("global_conf.json.sx1250.")[-1].split(".")[0]
+    base = {"US915": 902300000, "AU915": 915200000}.get(region)
+    if base is None:
+        print(region.lower())
+    else:
+        with open(path) as fh:
+            freq = json.load(fh).get("SX130x_conf", {}).get("radio_0", {}).get("freq")
+        if isinstance(freq, int):
+            sb = (freq - base - 400000) // 1600000
+            if 0 <= sb <= 7:
+                print(f"{region.lower()}_{sb}")
+PY
+)"
+[[ -n "$GW_REGION_ID" ]] || GW_REGION_ID="au915_1"
+
 DEFAULT_REGION_INDEX=0
 for i in "${!REGION_IDS[@]}"; do
-  if [[ "${REGION_IDS[$i]}" == "au915_1" ]]; then
+  if [[ "${REGION_IDS[$i]}" == "$GW_REGION_ID" ]]; then
     DEFAULT_REGION_INDEX="$i"
+    info "Región detectada en la radio del gateway: ${GW_REGION_ID}"
     break
   fi
 done
@@ -545,7 +554,7 @@ fi
 
 # ---------- Gateway Bridge ----------
 
-if [[ "$INSTALL_GWB" == "yes" ]]; then
+{
   if [[ -f "$GWB_CONF" ]]; then
     GWB_BACKUP="${GWB_CONF}.bak-${TIMESTAMP}"
     root cp -a "$GWB_CONF" "$GWB_BACKUP"
@@ -599,20 +608,16 @@ EOF
   root install -o root -g "$GWB_GROUP" -m 0640 "$TMP_GWB_CONF" "$GWB_CONF"
   rm -f "$TMP_GWB_CONF"
 
-  # Compatibilidad con Yubox gwOS: la imagen del gateway trae su propia unit
-  # chirpstack-gateway-bridge (User=chirpstack) que tapa a la del paquete apt
-  # (User=gatewaybridge). El postinst del paquete deja el directorio de
-  # configuración 0750 gatewaybridge:gatewaybridge, y el usuario de la unit
-  # efectiva no puede ni atravesarlo: el servicio muere en bucle con
-  # "permission denied". Permiso de tránsito al directorio; el .toml en sí
-  # conserva su 0640.
+  # Permiso de tránsito del directorio: si en algún momento se instaló el
+  # paquete apt del bridge, su postinst lo deja 0750 gatewaybridge y el
+  # usuario de la unit de la imagen (chirpstack) no puede ni atravesarlo.
   root chmod 0755 "$(dirname "$GWB_CONF")"
 
-  if ! root chirpstack-gateway-bridge configfile --config "$GWB_CONF" >/dev/null; then
+  if ! root "$GWB_BIN" configfile --config "$GWB_CONF" >/dev/null; then
     [[ -n "$GWB_BACKUP" ]] && root cp -a "$GWB_BACKUP" "$GWB_CONF"
     die "La configuración de Gateway Bridge no pasó la validación; se restauró el respaldo."
   fi
-fi
+}
 
 # ---------- Inicio y verificación ----------
 
@@ -626,14 +631,12 @@ if ! root systemctl is-active --quiet chirpstack; then
   die "ChirpStack no pudo iniciar."
 fi
 
-if [[ "$INSTALL_GWB" == "yes" ]]; then
-  root systemctl enable chirpstack-gateway-bridge
-  root systemctl restart chirpstack-gateway-bridge
+root systemctl enable chirpstack-gateway-bridge
+root systemctl restart chirpstack-gateway-bridge
 
-  if ! root systemctl is-active --quiet chirpstack-gateway-bridge; then
-    root journalctl -u chirpstack-gateway-bridge -n 50 --no-pager || true
-    die "ChirpStack Gateway Bridge no pudo iniciar."
-  fi
+if ! root systemctl is-active --quiet chirpstack-gateway-bridge; then
+  root journalctl -u chirpstack-gateway-bridge -n 50 --no-pager || true
+  die "ChirpStack Gateway Bridge no pudo iniciar."
 fi
 
 HTTP_OK="no"
@@ -669,6 +672,21 @@ if [[ "$SET_ADMIN_PASSWORD" == "yes" ]]; then
   rm -f "$ADMIN_PASSWORD_FILE"
 fi
 
+# --- Conectar la radio del gateway al ChirpStack local -----------------------
+# Equivale a elegir "Semtech UDP directo -> 127.0.0.1:1700" en yubox-tool;
+# yubox-backhaul valida, respalda y reinicia los servicios del gateway.
+
+GATEWAY_SWITCHED="no"
+printf '\n'
+if ask_yes_no "¿Apuntar ahora la radio del gateway a este ChirpStack (Semtech UDP local)?" yes; then
+  if printf 'BACKHAUL_MODE=semtech_udp\nUDP_SERVER=127.0.0.1\nUDP_PORT_UP=%s\nUDP_PORT_DOWN=%s\n' \
+      "$UDP_PORT" "$UDP_PORT" | root "$YUBOX_BACKHAUL" set; then
+    GATEWAY_SWITCHED="yes"
+  else
+    warn "No se pudo cambiar el modo del gateway. Hazlo con: sudo yubox-tool -> Configurar conexión -> Semtech UDP directo -> 127.0.0.1:${UDP_PORT}."
+  fi
+fi
+
 PRIMARY_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
 [[ -n "$PRIMARY_IP" ]] || PRIMARY_IP="IP_DE_ESTA_MAQUINA"
 CS_VERSION="$(dpkg-query -W -f='${Version}' chirpstack 2>/dev/null || printf 'instalado')"
@@ -692,23 +710,18 @@ else
   printf '  En una instalación nueva, la clave inicial es: admin\n'
 fi
 
-if [[ "$INSTALL_GWB" == "yes" ]]; then
-  printf '\n%sPacket Forwarder Semtech UDP%s\n' "$BOLD" "$RESET"
-  if [[ "$PF_LOCAL" == "yes" ]]; then
-    printf '  server_address: 127.0.0.1\n'
-  else
-    printf '  server_address: %s\n' "$PRIMARY_IP"
-  fi
-  printf '  serv_port_up:   %s\n' "$UDP_PORT"
-  printf '  serv_port_down: %s\n' "$UDP_PORT"
-  printf '  Topic MQTT:     %s/gateway/...\n' "$REGION_TOPIC"
+printf '\n%sRadio del gateway%s\n' "$BOLD" "$RESET"
+if [[ "$GATEWAY_SWITCHED" == "yes" ]]; then
+  printf '  Conectada a este ChirpStack (Semtech UDP directo -> 127.0.0.1:%s).\n' "$UDP_PORT"
+else
+  printf '  Sin cambios. Para conectarla: sudo yubox-tool -> Configurar conexión\n'
+  printf '  -> Semtech UDP directo -> servidor 127.0.0.1, puertos %s/%s.\n' "$UDP_PORT" "$UDP_PORT"
 fi
+printf '  Topic MQTT: %s/gateway/...\n' "$REGION_TOPIC"
 
-printf '\n%sImportante:%s el Packet Forwarder también debe usar las frecuencias/canales de la región seleccionada.\n' "$YELLOW" "$RESET"
-printf 'Este script no modifica global_conf.json ni local_conf.json.\n'
+printf '\n%sImportante:%s no uses después la opción "ChirpStack v3" de yubox-tool/web:\n' "$YELLOW" "$RESET"
+printf 'reescribiría la configuración del Gateway Bridge local y desconectaría este ChirpStack.\n'
 printf '\nComandos útiles:\n'
 printf '  sudo journalctl -fu chirpstack\n'
-if [[ "$INSTALL_GWB" == "yes" ]]; then
-  printf '  sudo journalctl -fu chirpstack-gateway-bridge\n'
-  printf "  mosquitto_sub -h 127.0.0.1 -v -t '%s/gateway/#'\n" "$REGION_TOPIC"
-fi
+printf '  sudo journalctl -fu chirpstack-gateway-bridge\n'
+printf "  mosquitto_sub -h 127.0.0.1 -v -t '%s/gateway/#'\n" "$REGION_TOPIC"
