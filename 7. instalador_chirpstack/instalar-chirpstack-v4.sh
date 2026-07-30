@@ -176,10 +176,30 @@ esac
 # Este instalador es exclusivo para Yubox Gateway OS y necesita el modo
 # "ChirpStack MQTT hacia broker local" de la imagen (ISSUE-022).
 YUBOX_BACKHAUL="/usr/local/sbin/yubox-backhaul"
+YUBOX_TOOL="/usr/local/bin/yubox-tool"
 [[ -d /etc/yubox && -x "$YUBOX_BACKHAUL" ]] \
   || die "Este instalador es solo para la imagen Yubox Gateway OS (no encuentro sus componentes)."
-grep -q 'tcp://' "$YUBOX_BACKHAUL" \
-  || die "Esta versión de Yubox gwOS no soporta broker MQTT local; actualiza la imagen (ISSUE-022)."
+
+# Imágenes anteriores a ISSUE-022: se ofrece actualizar los dos componentes
+# afectados con copias oficiales publicadas en este mismo repo del curso
+# (gwos-update/, tomadas del commit c93dfec de la imagen). La integridad la
+# garantiza el SHA-256 embebido: si los archivos publicados cambiaran sin
+# actualizar estos hashes, la instalación falla cerrada en vez de ejecutar
+# código no verificado. La actualización no toca ninguna configuración; solo
+# reemplaza los scripts (con respaldo).
+GWOS_UPDATE_RAW="https://raw.githubusercontent.com/elandivar/Curso_LoRaWAN_Master_Training/main/7.%20instalador_chirpstack/gwos-update"
+YUBOX_BACKHAUL_SHA256="8832b9b3d7e984b3f265d4f1aa38158fc262e8cee1e0ca93c78bfc2e589d77d7"
+YUBOX_TOOL_SHA256="b2ba2e82ef9f7b43af11bad0e6c33889b42182fd5b56d531b89d90788570122a"
+
+UPGRADE_IMAGE_TOOLS="no"
+if ! grep -q 'tcp://' "$YUBOX_BACKHAUL"; then
+  warn "Esta versión de Yubox gwOS no soporta broker MQTT local (ISSUE-022)."
+  if ask_yes_no "¿Actualizar ahora los componentes del gateway (yubox-backhaul y yubox-tool) para soportarlo?" yes; then
+    UPGRADE_IMAGE_TOOLS="yes"
+  else
+    die "Sin ese soporte este instalador no puede continuar. Actualiza la imagen y vuelve a intentarlo."
+  fi
+fi
 
 printf '\n%sInstalador interactivo de ChirpStack v4%s\n' "$BOLD" "$RESET"
 printf 'Sistema: %s | Arquitectura: %s\n\n' "${PRETTY_NAME:-desconocido}" "${ARCH:-desconocida}"
@@ -240,6 +260,31 @@ root env DEBIAN_FRONTEND=noninteractive apt-get install -y \
   redis-tools
 
 root systemctl enable --now mosquitto redis-server postgresql
+
+# ---------- Actualización de componentes de la imagen (si se aceptó) ----------
+
+if [[ "$UPGRADE_IMAGE_TOOLS" == "yes" ]]; then
+  info "Actualizando yubox-backhaul y yubox-tool (gwos-update del repo del curso)..."
+  UPG_TS="$(date +%Y%m%d-%H%M%S)"
+  for entry in \
+    "yubox-backhaul|$YUBOX_BACKHAUL|$YUBOX_BACKHAUL_SHA256" \
+    "yubox-tool|$YUBOX_TOOL|$YUBOX_TOOL_SHA256"; do
+    IFS='|' read -r repo_path dest expected_sha <<<"$entry"
+    tmp_file="$(mktemp)"
+    curl -fsSL "${GWOS_UPDATE_RAW}/${repo_path}" -o "$tmp_file" \
+      || { rm -f "$tmp_file"; die "No se pudo descargar ${repo_path} (¿hay Internet?)."; }
+    actual_sha="$(sha256sum "$tmp_file" | awk '{print $1}')"
+    [[ "$actual_sha" == "$expected_sha" ]] \
+      || { rm -f "$tmp_file"; die "La verificación SHA-256 de ${repo_path} falló; no se instaló nada."; }
+    bash -n "$tmp_file" || { rm -f "$tmp_file"; die "El archivo descargado ${repo_path} no es un script válido."; }
+    root cp -a "$dest" "${dest}.bak-${UPG_TS}"
+    root install -o root -g root -m 0755 "$tmp_file" "$dest"
+    rm -f "$tmp_file"
+  done
+  grep -q 'tcp://' "$YUBOX_BACKHAUL" \
+    || die "La actualización no surtió efecto; revisa ${YUBOX_BACKHAUL}."
+  info "Componentes actualizados (respaldos en *.bak-${UPG_TS})."
+fi
 
 # Comprueba que el broker local acepta conexiones anónimas locales, como espera esta instalación.
 if ! mosquitto_pub -h 127.0.0.1 -p 1883 -t chirpstack/installer/test -m ok >/dev/null 2>&1; then
@@ -599,6 +644,25 @@ fi
 
 GATEWAY_SWITCHED="no"
 printf '\n'
+
+# Advertencia contextual: si el gateway ya reporta a un Network Server, el
+# cambio lo desconecta de ese servidor en el acto. Los parámetros del modo
+# anterior quedan guardados en backhaul.conf (volver es re-aplicar el modo
+# desde yubox-tool, sin re-pegar credenciales).
+CURRENT_MODE="$(cat /etc/yubox/active-mode 2>/dev/null || true)"
+CURRENT_EP="$(cat /etc/yubox/active-endpoint 2>/dev/null || true)"
+case "$CURRENT_MODE" in
+  semtech_udp)          CURRENT_LABEL="Semtech UDP directo" ;;
+  chirpstack_mqtt*)     CURRENT_LABEL="ChirpStack MQTT" ;;
+  basics_station)       CURRENT_LABEL="LoRa Basics Station" ;;
+  *)                    CURRENT_LABEL="" ;;
+esac
+if [[ -n "$CURRENT_LABEL" ]]; then
+  printf '%sAtención:%s el gateway dejará de reportar a su Network Server actual\n' "$YELLOW" "$RESET"
+  printf '  (%s%s).\n' "$CURRENT_LABEL" "${CURRENT_EP:+ -> $CURRENT_EP}"
+  printf 'Su configuración queda guardada: puede volver con sudo yubox-tool.\n\n'
+fi
+
 if ask_yes_no "¿Conectar ahora la radio del gateway a este ChirpStack?" yes; then
   if printf 'BACKHAUL_MODE=chirpstack_mqtt\nMQTT_SERVER=tcp://127.0.0.1:1883\nMQTT_CHIRPSTACK_VERSION=v4\nMQTT_TOPIC_PREFIX=%s\nMQTT_AUTH=userpass\nMQTT_USERNAME=\nMQTT_PASSWORD=\n' \
       "$REGION_TOPIC" | root "$YUBOX_BACKHAUL" set; then

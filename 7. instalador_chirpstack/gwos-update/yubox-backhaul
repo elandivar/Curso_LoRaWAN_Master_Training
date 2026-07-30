@@ -1,0 +1,574 @@
+#!/bin/bash
+set -euo pipefail
+
+YUBOX_ETC_DIR="${YUBOX_ETC_DIR:-/etc/yubox}"
+BACKHAUL_CONF="${BACKHAUL_CONF:-$YUBOX_ETC_DIR/backhaul.conf}"
+PF_DIR="${PF_DIR:-/opt/yubox-gw/packet_forwarder}"
+MQTT_CONF="${MQTT_CONF:-/etc/chirpstack-mqtt-forwarder/chirpstack-mqtt-forwarder.toml}"
+MQTT_BINARY="${MQTT_BINARY:-/usr/local/bin/chirpstack-mqtt-forwarder}"
+BRIDGE_CONF="${BRIDGE_CONF:-/etc/chirpstack-gateway-bridge/chirpstack-gateway-bridge.toml}"
+BRIDGE_BINARY="${BRIDGE_BINARY:-/usr/local/bin/chirpstack-gateway-bridge}"
+STATION_DIR="${STATION_DIR:-/etc/yubox/station}"
+STATION_BINARY="${STATION_BINARY:-/usr/local/bin/station}"
+ACTIVE_MODE_FILE="${ACTIVE_MODE_FILE:-$YUBOX_ETC_DIR/active-mode}"
+ACTIVE_ENDPOINT_FILE="${ACTIVE_ENDPOINT_FILE:-$YUBOX_ETC_DIR/active-endpoint}"
+NO_SYSTEMD="${YUBOX_NO_SYSTEMD:-0}"
+
+BACKHAUL_MODE="semtech_udp"
+UDP_SERVER="cloud.yubox.com"
+UDP_PORT_UP="1700"
+UDP_PORT_DOWN="1700"
+MQTT_SERVER=""
+MQTT_TOPIC_PREFIX=""
+MQTT_AUTH="userpass"
+MQTT_USERNAME=""
+MQTT_PASSWORD=""
+MQTT_CA_CERT=""
+MQTT_TLS_CERT=""
+MQTT_TLS_KEY=""
+# v4: ChirpStack MQTT Forwarder (topics con prefijo regional).
+# v3: ChirpStack Gateway Bridge 3.14 (topics gateway/... sin prefijo).
+MQTT_CHIRPSTACK_VERSION="v4"
+# Formato de mensajes del Gateway Bridge (solo v3). Debe coincidir con el
+# marshaler configurado en el Network Server: json | protobuf | v2_json.
+MQTT_MARSHALER="json"
+# Basics Station: el plan de canales lo envía el LNS; solo hacen falta el
+# endpoint wss:// y las credenciales.
+BS_LNS_URI=""
+BS_AUTH="token"
+BS_TOKEN=""
+BS_TRUST=""
+BS_TLS_CERT=""
+BS_TLS_KEY=""
+
+fail() { echo "yubox-backhaul: $*" >&2; return 1; }
+
+service_can_read() {
+  local file="$1"
+  [ -r "$file" ] || return 1
+  if id chirpstack >/dev/null 2>&1 && command -v runuser >/dev/null 2>&1; then
+    runuser -u chirpstack -- test -r "$file"
+  fi
+}
+
+load_config() {
+  local file="${1:-$BACKHAUL_CONF}" line key value
+  [ -f "$file" ] || { fail "no existe $file"; return 1; }
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="${line%$'\r'}"
+    [[ -z "$line" || "$line" =~ ^[[:space:]]*# || "$line" != *=* ]] && continue
+    key="${line%%=*}"
+    value="${line#*=}"
+    key="$(printf '%s' "$key" | tr -d '[:space:]')"
+    case "$key" in
+      BACKHAUL_MODE) BACKHAUL_MODE="$value" ;;
+      UDP_SERVER) UDP_SERVER="$value" ;;
+      UDP_PORT_UP) UDP_PORT_UP="$value" ;;
+      UDP_PORT_DOWN) UDP_PORT_DOWN="$value" ;;
+      MQTT_SERVER) MQTT_SERVER="$value" ;;
+      MQTT_TOPIC_PREFIX) MQTT_TOPIC_PREFIX="$value" ;;
+      MQTT_AUTH) MQTT_AUTH="$value" ;;
+      MQTT_USERNAME) MQTT_USERNAME="$value" ;;
+      MQTT_PASSWORD) MQTT_PASSWORD="$value" ;;
+      MQTT_CA_CERT) MQTT_CA_CERT="$value" ;;
+      MQTT_TLS_CERT) MQTT_TLS_CERT="$value" ;;
+      MQTT_TLS_KEY) MQTT_TLS_KEY="$value" ;;
+      MQTT_CHIRPSTACK_VERSION) MQTT_CHIRPSTACK_VERSION="$value" ;;
+      MQTT_MARSHALER) MQTT_MARSHALER="$value" ;;
+      BS_LNS_URI) BS_LNS_URI="$value" ;;
+      BS_AUTH) BS_AUTH="$value" ;;
+      BS_TOKEN) BS_TOKEN="$value" ;;
+      BS_TRUST) BS_TRUST="$value" ;;
+      BS_TLS_CERT) BS_TLS_CERT="$value" ;;
+      BS_TLS_KEY) BS_TLS_KEY="$value" ;;
+    esac
+  done < "$file"
+}
+
+valid_port() {
+  [[ "$1" =~ ^[0-9]+$ ]] && (( 10#$1 >= 1 && 10#$1 <= 65535 ))
+}
+
+validate_udp() {
+  [[ "$UDP_SERVER" =~ ^[A-Za-z0-9][A-Za-z0-9._:-]*$ ]] || fail "servidor UDP inválido"
+  valid_port "$UDP_PORT_UP" || fail "puerto UDP UP inválido"
+  valid_port "$UDP_PORT_DOWN" || fail "puerto UDP DOWN inválido"
+}
+
+validate_mqtt() {
+  case "$MQTT_CHIRPSTACK_VERSION" in
+    v3)
+      [ -x "$BRIDGE_BINARY" ] || fail "no está instalado ChirpStack Gateway Bridge"
+      case "$MQTT_MARSHALER" in
+        json|protobuf|v2_json) ;;
+        *) fail "MQTT_MARSHALER debe ser json, protobuf o v2_json" ;;
+      esac
+      ;;
+    v4) [ -x "$MQTT_BINARY" ] || fail "no está instalado ChirpStack MQTT Forwarder" ;;
+    *) fail "MQTT_CHIRPSTACK_VERSION debe ser v3 o v4" ;;
+  esac
+  # ssl/wss obligatorio hacia brokers remotos. tcp:// SOLO hacia loopback: el
+  # caso de un ChirpStack instalado en el propio gateway (curso/edge), donde
+  # el tráfico jamás sale del equipo y exigir TLS no aporta nada. ISSUE-022.
+  if ! [[ "$MQTT_SERVER" =~ ^(ssl|wss)://[^[:space:]\"\']+$ ]]; then
+    [[ "$MQTT_SERVER" =~ ^tcp://(127\.0\.0\.1|localhost|\[::1\])(:[0-9]+)?/?$ ]] \
+      || fail "MQTT_SERVER debe usar ssl:// o wss:// (tcp:// solo hacia 127.0.0.1/localhost)"
+  fi
+  [[ "$MQTT_SERVER" != *@* ]] || fail "MQTT_SERVER no debe incluir credenciales en la URI"
+  # El prefijo regional solo existe en ChirpStack v4; en v3 los topics son
+  # gateway/<id>/... fijos y el prefijo se ignora (puede quedar vacío).
+  if [ "$MQTT_CHIRPSTACK_VERSION" = "v4" ] || [ -n "$MQTT_TOPIC_PREFIX" ]; then
+    [[ "$MQTT_TOPIC_PREFIX" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]] || fail "MQTT_TOPIC_PREFIX inválido"
+    [[ "$MQTT_TOPIC_PREFIX" != */ ]] || fail "MQTT_TOPIC_PREFIX no debe terminar en /"
+  fi
+  case "$MQTT_AUTH" in
+    userpass)
+      # Hacia loopback se permiten credenciales vacías (broker local anónimo,
+      # p. ej. el mosquitto que instala ChirpStack en el propio gateway).
+      if ! [[ "$MQTT_SERVER" =~ ^tcp:// ]]; then
+        [ -n "$MQTT_USERNAME" ] || fail "falta MQTT_USERNAME"
+        [ -n "$MQTT_PASSWORD" ] || fail "falta MQTT_PASSWORD"
+      fi
+      ;;
+    client_cert)
+      service_can_read "$MQTT_TLS_CERT" || fail "certificado cliente MQTT no legible por el servicio"
+      service_can_read "$MQTT_TLS_KEY" || fail "clave cliente MQTT no legible por el servicio"
+      ;;
+    *) fail "MQTT_AUTH debe ser userpass o client_cert" ;;
+  esac
+  [ -z "$MQTT_CA_CERT" ] || service_can_read "$MQTT_CA_CERT" || fail "certificado CA MQTT no legible por el servicio"
+  [[ "$MQTT_USERNAME" != *$'\n'* && "$MQTT_USERNAME" != *$'\r'* ]] || fail "MQTT_USERNAME contiene caracteres de control"
+  [[ "$MQTT_PASSWORD" != *$'\n'* && "$MQTT_PASSWORD" != *$'\r'* ]] || fail "MQTT_PASSWORD contiene caracteres de control"
+}
+
+validate_basics_station() {
+  [ -x "$STATION_BINARY" ] || fail "no está instalado LoRa Basics Station en esta imagen"
+  [[ "$BS_LNS_URI" =~ ^wss://[^[:space:]\"\']+$ ]] || fail "BS_LNS_URI debe usar wss:// (TLS)"
+  local trust_src="${BS_TRUST:-/etc/ssl/certs/ca-certificates.crt}"
+  [ -r "$trust_src" ] || fail "certificado(s) CA para Basics Station no legibles: $trust_src"
+  case "$BS_AUTH" in
+    token)
+      [ -n "$BS_TOKEN" ] || fail "falta BS_TOKEN (API key/token del LNS)"
+      [[ "$BS_TOKEN" != *$'\n'* && "$BS_TOKEN" != *$'\r'* ]] || fail "BS_TOKEN contiene saltos de línea"
+      ;;
+    client_cert)
+      [ -r "$BS_TLS_CERT" ] || fail "certificado cliente de Basics Station no legible"
+      [ -r "$BS_TLS_KEY" ] || fail "clave cliente de Basics Station no legible"
+      ;;
+    none) ;;
+    *) fail "BS_AUTH debe ser token, client_cert o none" ;;
+  esac
+}
+
+toml_escape() {
+  local value="$1"
+  value="${value//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  printf '%s' "$value"
+}
+
+# EUI (16 hex, minúsculas) del gateway, leído del global_conf del packet
+# forwarder. Se usa como client_id MQTT: un broker estándar rechaza un
+# client_id vacío cuando clean_session=false ("identifier rejected").
+gateway_eui() {
+  local json eui
+  json="$(find_packet_forwarder_config)"
+  [ -n "$json" ] || return 0
+  if command -v jq >/dev/null 2>&1; then
+    eui="$(jq -r '.gateway_conf.gateway_ID // empty' "$json" 2>/dev/null)"
+  else
+    eui="$(sed -n 's/.*"gateway_ID"[[:space:]]*:[[:space:]]*"\([0-9A-Fa-f]*\)".*/\1/p' "$json" | head -n1)"
+  fi
+  printf '%s' "$eui" | tr 'A-F' 'a-f'
+}
+
+write_mqtt_config() {
+  local dir tmp username password cert key client_id clean_session
+  dir="$(dirname "$MQTT_CONF")"
+  mkdir -p "$dir"
+  tmp="$(mktemp "$dir/.mqtt-forwarder.XXXXXX")"
+
+  username=""; password=""; cert=""; key=""
+  if [ "$MQTT_AUTH" = "userpass" ]; then
+    username="$MQTT_USERNAME"
+    password="$MQTT_PASSWORD"
+  else
+    cert="$MQTT_TLS_CERT"
+    key="$MQTT_TLS_KEY"
+  fi
+
+  # client_id único (EUI del gateway) para evitar el rechazo del broker ante
+  # un client_id vacío con clean_session=false. Sin EUI, sesión limpia.
+  client_id="$(gateway_eui)"
+  clean_session="false"
+  [ -n "$client_id" ] || clean_session="true"
+
+  cat > "$tmp" <<EOF
+[logging]
+level="info"
+log_to_syslog=false
+
+[mqtt]
+topic_prefix="$(toml_escape "$MQTT_TOPIC_PREFIX")"
+server="$(toml_escape "$MQTT_SERVER")"
+username="$(toml_escape "$username")"
+password="$(toml_escape "$password")"
+qos=0
+clean_session=$clean_session
+client_id="$(toml_escape "$client_id")"
+keep_alive_interval="30s"
+ca_cert="$(toml_escape "$MQTT_CA_CERT")"
+tls_cert="$(toml_escape "$cert")"
+tls_key="$(toml_escape "$key")"
+
+[backend]
+enabled="semtech_udp"
+
+[backend.semtech_udp]
+bind="127.0.0.1:1700"
+time_fallback_enabled=false
+EOF
+  chmod 640 "$tmp"
+  if getent group chirpstack >/dev/null 2>&1; then
+    chown root:chirpstack "$tmp"
+  fi
+  mv -f "$tmp" "$MQTT_CONF"
+}
+
+write_gateway_bridge_config() {
+  local dir tmp username password cert key client_id clean_session
+  dir="$(dirname "$BRIDGE_CONF")"
+  mkdir -p "$dir"
+  tmp="$(mktemp "$dir/.gateway-bridge.XXXXXX")"
+
+  username=""; password=""; cert=""; key=""
+  if [ "$MQTT_AUTH" = "userpass" ]; then
+    username="$MQTT_USERNAME"
+    password="$MQTT_PASSWORD"
+  else
+    cert="$MQTT_TLS_CERT"
+    key="$MQTT_TLS_KEY"
+  fi
+
+  # client_id único (EUI del gateway) para evitar el rechazo del broker ante
+  # un client_id vacío con clean_session=false. Sin EUI, sesión limpia.
+  client_id="$(gateway_eui)"
+  clean_session="false"
+  [ -n "$client_id" ] || clean_session="true"
+
+  cat > "$tmp" <<EOF
+[general]
+log_level=4
+
+[backend]
+type="semtech_udp"
+
+[backend.semtech_udp]
+udp_bind="127.0.0.1:1700"
+skip_crc_check=false
+fake_rx_time=false
+
+[integration]
+# El marshaler debe coincidir con el del Network Server (json | protobuf | v2_json).
+marshaler="$MQTT_MARSHALER"
+
+[integration.mqtt]
+event_topic_template="gateway/{{ .GatewayID }}/event/{{ .EventType }}"
+state_topic_template="gateway/{{ .GatewayID }}/state/{{ .StateType }}"
+command_topic_template="gateway/{{ .GatewayID }}/command/#"
+state_retained=true
+keep_alive="30s"
+max_reconnect_interval="1m0s"
+
+[integration.mqtt.auth]
+type="generic"
+
+[integration.mqtt.auth.generic]
+servers=["$(toml_escape "$MQTT_SERVER")"]
+username="$(toml_escape "$username")"
+password="$(toml_escape "$password")"
+qos=0
+clean_session=$clean_session
+client_id="$(toml_escape "$client_id")"
+ca_cert="$(toml_escape "$MQTT_CA_CERT")"
+tls_cert="$(toml_escape "$cert")"
+tls_key="$(toml_escape "$key")"
+EOF
+  chmod 640 "$tmp"
+  if getent group chirpstack >/dev/null 2>&1; then
+    chown root:chirpstack "$tmp"
+  fi
+  mv -f "$tmp" "$BRIDGE_CONF"
+}
+
+# Escribe el home de Basics Station: station.conf (solo config de radio; el
+# plan de canales lo envía el LNS) y las credenciales tc.* según BS_AUTH.
+# log_level VERBOSE (no INFO): es el nivel donde station registra cada frame
+# (updf/jreq/dntxed), del que depende "Frames en vivo" de la interfaz web.
+write_station_config() {
+  local trust_src="${BS_TRUST:-/etc/ssl/certs/ca-certificates.crt}"
+  mkdir -p "$STATION_DIR"
+  chmod 700 "$STATION_DIR" 2>/dev/null || true
+
+  cat > "$STATION_DIR/station.conf" <<'EOF'
+{
+  "radio_conf": {
+    "lorawan_public": true,
+    "clksrc": 0,
+    "device": "/dev/spidev0.0",
+    "pps": false,
+    "radio_0": { "type": "SX1250", "rssi_offset": -215.4, "antenna_gain": 0, "tx_enable": true },
+    "radio_1": { "type": "SX1250", "rssi_offset": -215.4, "antenna_gain": 0, "tx_enable": false }
+  },
+  "station_conf": {
+    "log_file": "stderr",
+    "log_level": "VERBOSE"
+  }
+}
+EOF
+
+  printf '%s\n' "$BS_LNS_URI" > "$STATION_DIR/tc.uri"
+  cp -f "$trust_src" "$STATION_DIR/tc.trust"
+  rm -f "$STATION_DIR/tc.key" "$STATION_DIR/tc.crt"
+  case "$BS_AUTH" in
+    token)
+      # tc.key lleva la cabecera HTTP completa con terminación CRLF (formato
+      # que exigen TTN/The Things Stack). Si el usuario ya pegó la cabecera
+      # entera, se respeta tal cual.
+      case "$BS_TOKEN" in
+        Authorization:*) printf '%s\r\n' "$BS_TOKEN" > "$STATION_DIR/tc.key" ;;
+        *) printf 'Authorization: Bearer %s\r\n' "$BS_TOKEN" > "$STATION_DIR/tc.key" ;;
+      esac
+      chmod 600 "$STATION_DIR/tc.key"
+      ;;
+    client_cert)
+      cp -f "$BS_TLS_CERT" "$STATION_DIR/tc.crt"
+      cp -f "$BS_TLS_KEY" "$STATION_DIR/tc.key"
+      chmod 644 "$STATION_DIR/tc.crt"
+      chmod 600 "$STATION_DIR/tc.key"
+      ;;
+  esac
+  chmod 644 "$STATION_DIR/station.conf" "$STATION_DIR/tc.uri" "$STATION_DIR/tc.trust"
+}
+
+find_packet_forwarder_config() {
+  find "$PF_DIR" -maxdepth 1 -type f -name 'global_conf.json.sx1250.*' -print 2>/dev/null | sort | head -n 1
+}
+
+set_packet_forwarder_endpoint() {
+  local server="$1" up="$2" down="$3" json tmp
+  json="$(find_packet_forwarder_config)"
+  [ -n "$json" ] || { fail "no se encontró global_conf del packet forwarder"; return 1; }
+  tmp="$(mktemp "${json}.XXXXXX")"
+  sed -E \
+    -e "s|(\"server_address\"[[:space:]]*:[[:space:]]*)\"[^\"]*\"|\1\"$server\"|" \
+    -e "s|(\"serv_port_up\"[[:space:]]*:[[:space:]]*)[0-9]+|\1$up|" \
+    -e "s|(\"serv_port_down\"[[:space:]]*:[[:space:]]*)[0-9]+|\1$down|" \
+    "$json" > "$tmp"
+  grep -Eq "\"server_address\"[[:space:]]*:[[:space:]]*\"$server\"" "$tmp" || { rm -f "$tmp"; fail "no se pudo actualizar server_address"; return 1; }
+  mv -f "$tmp" "$json"
+  # mktemp crea 600; el estado (yubox-status, web) se lee sin privilegios.
+  chmod 644 "$json"
+}
+
+systemctl_do() {
+  [ "$NO_SYSTEMD" = "1" ] && return 0
+  systemctl "$@"
+}
+
+record_active_mode() {
+  local tmp endpoint_tmp endpoint mode_label
+  mode_label="$BACKHAUL_MODE"
+  [ "$BACKHAUL_MODE" = "chirpstack_mqtt" ] && mode_label="chirpstack_mqtt_${MQTT_CHIRPSTACK_VERSION}"
+  mkdir -p "$(dirname "$ACTIVE_MODE_FILE")"
+  tmp="$(mktemp "${ACTIVE_MODE_FILE}.XXXXXX")"
+  printf '%s\n' "$mode_label" > "$tmp"
+  chmod 644 "$tmp"
+  mv -f "$tmp" "$ACTIVE_MODE_FILE"
+  if [ "$BACKHAUL_MODE" = "semtech_udp" ]; then
+    endpoint="$UDP_SERVER:$UDP_PORT_UP/$UDP_PORT_DOWN"
+  elif [ "$BACKHAUL_MODE" = "basics_station" ]; then
+    endpoint="$BS_LNS_URI"
+  else
+    endpoint="$MQTT_SERVER"
+  fi
+  endpoint_tmp="$(mktemp "${ACTIVE_ENDPOINT_FILE}.XXXXXX")"
+  printf '%s\n' "$endpoint" > "$endpoint_tmp"
+  chmod 644 "$endpoint_tmp"
+  mv -f "$endpoint_tmp" "$ACTIVE_ENDPOINT_FILE"
+}
+
+apply_mode() {
+  case "$BACKHAUL_MODE" in
+    semtech_udp)
+      validate_udp
+      # Exclusión mutua: los MQTT hacen bind a 127.0.0.1:1700 y Basics Station
+      # toma el concentrador SPI; solo un backhaul puede quedar activo.
+      systemctl_do disable --now chirpstack-mqtt-forwarder.service 2>/dev/null || true
+      systemctl_do disable --now chirpstack-gateway-bridge.service 2>/dev/null || true
+      systemctl_do disable --now yubox-basicstation.service 2>/dev/null || true
+      set_packet_forwarder_endpoint "$UDP_SERVER" "$UDP_PORT_UP" "$UDP_PORT_DOWN"
+      systemctl_do enable yubox-lora-pktfwd.service
+      systemctl_do restart yubox-lora-pktfwd.service
+      if [ "$NO_SYSTEMD" != "1" ]; then
+        sleep 1
+        systemctl is-active --quiet yubox-lora-pktfwd.service || fail "el packet forwarder no pudo iniciar"
+      fi
+      record_active_mode
+      ;;
+    chirpstack_mqtt)
+      validate_mqtt
+      systemctl_do disable --now yubox-basicstation.service 2>/dev/null || true
+      if [ "$MQTT_CHIRPSTACK_VERSION" = "v3" ]; then
+        write_gateway_bridge_config
+        set_packet_forwarder_endpoint "127.0.0.1" "1700" "1700"
+        systemctl_do disable --now chirpstack-mqtt-forwarder.service 2>/dev/null || true
+        systemctl_do daemon-reload
+        systemctl_do enable --now chirpstack-gateway-bridge.service
+        if [ "$NO_SYSTEMD" != "1" ]; then
+          sleep 1
+          systemctl is-active --quiet chirpstack-gateway-bridge.service || fail "ChirpStack Gateway Bridge no pudo iniciar"
+        fi
+      else
+        write_mqtt_config
+        set_packet_forwarder_endpoint "127.0.0.1" "1700" "1700"
+        systemctl_do disable --now chirpstack-gateway-bridge.service 2>/dev/null || true
+        systemctl_do daemon-reload
+        systemctl_do enable --now chirpstack-mqtt-forwarder.service
+        if [ "$NO_SYSTEMD" != "1" ]; then
+          sleep 1
+          systemctl is-active --quiet chirpstack-mqtt-forwarder.service || fail "ChirpStack MQTT Forwarder no pudo iniciar"
+        fi
+      fi
+      systemctl_do enable yubox-lora-pktfwd.service
+      systemctl_do restart yubox-lora-pktfwd.service
+      record_active_mode
+      ;;
+    basics_station)
+      validate_basics_station
+      write_station_config
+      # station reemplaza a lora_pkt_fwd (control directo del SX1302): hay que
+      # detener el packet forwarder y los componentes MQTT.
+      systemctl_do disable --now yubox-lora-pktfwd.service 2>/dev/null || true
+      systemctl_do disable --now chirpstack-mqtt-forwarder.service 2>/dev/null || true
+      systemctl_do disable --now chirpstack-gateway-bridge.service 2>/dev/null || true
+      systemctl_do daemon-reload
+      systemctl_do enable --now yubox-basicstation.service
+      if [ "$NO_SYSTEMD" != "1" ]; then
+        sleep 1
+        systemctl is-active --quiet yubox-basicstation.service || fail "Basics Station no pudo iniciar"
+      fi
+      record_active_mode
+      ;;
+    *) fail "modo no soportado: $BACKHAUL_MODE" ;;
+  esac
+}
+
+status() {
+  load_config
+  echo "mode=$BACKHAUL_MODE"
+  case "$BACKHAUL_MODE" in
+    semtech_udp)
+      echo "endpoint=$UDP_SERVER:$UDP_PORT_UP/$UDP_PORT_DOWN"
+      ;;
+    basics_station)
+      echo "endpoint=$BS_LNS_URI"
+      echo "auth=$BS_AUTH"
+      echo "canal_plan=lo envía el LNS (no se configura en el gateway)"
+      ;;
+    *)
+      echo "endpoint=$MQTT_SERVER"
+      echo "chirpstack_version=$MQTT_CHIRPSTACK_VERSION"
+      if [ "$MQTT_CHIRPSTACK_VERSION" = "v3" ]; then
+        echo "topics=gateway/<id>/... (sin prefijo regional en v3)"
+        echo "marshaler=$MQTT_MARSHALER"
+      else
+        echo "topic_prefix=$MQTT_TOPIC_PREFIX"
+      fi
+      echo "auth=$MQTT_AUTH"
+      echo "username=$MQTT_USERNAME"
+      ;;
+  esac
+}
+
+do_validate() {
+  case "$BACKHAUL_MODE" in
+    semtech_udp) validate_udp ;;
+    basics_station) validate_basics_station ;;
+    *) validate_mqtt ;;
+  esac
+}
+
+# Reemplazo transaccional de la configuración: lee un backhaul.conf completo
+# por stdin, lo valida ANTES de tocar nada, respalda el actual, lo instala y
+# aplica; si la aplicación falla, restaura y reaplica el anterior.
+# Lo usa la interfaz web (vía sudo); los secretos viajan por stdin, no argv.
+# Si la config nueva no trae valor para un secreto y la vigente sí, se
+# conserva el actual: permite editar desde la web sin re-teclear secretos
+# (que nunca pueden leerse de vuelta).
+merge_secret_into() {
+  local key="$1" file="$2" old
+  if ! grep -Eq "^${key}=.+" "$file" && [ -f "$BACKHAUL_CONF" ]; then
+    old="$(grep -E "^${key}=.+" "$BACKHAUL_CONF" | head -n 1 || true)"
+    if [ -n "$old" ]; then
+      printf '%s\n' "$old" >> "$file"
+    fi
+  fi
+}
+
+set_from_stdin() {
+  local tmp backup had_config=0
+  mkdir -p "$YUBOX_ETC_DIR"
+  # Serializar: dos 'set' concurrentes (p.ej. dos peticiones web) no deben
+  # entrelazar backup/apply. flock es de util-linux (presente en el gateway);
+  # donde no exista (macOS en los tests) se continúa sin él.
+  if command -v flock >/dev/null 2>&1; then
+    exec 9>"$YUBOX_ETC_DIR/.backhaul.lock"
+    flock -w 30 9 || { fail "otra operación de configuración está en curso"; return 1; }
+  fi
+  tmp="$(mktemp "$YUBOX_ETC_DIR/.backhaul-new.XXXXXX")"
+  cat > "$tmp"
+  merge_secret_into MQTT_PASSWORD "$tmp"
+  merge_secret_into BS_TOKEN "$tmp"
+
+  # Validar y aplicar se hace en procesos hijos ("$0" ...): dentro de un
+  # `if !` local, bash desactiva errexit en la función llamada y los fallos
+  # internos de las validaciones no se propagarían.
+  if ! BACKHAUL_CONF="$tmp" "$0" validate; then
+    rm -f "$tmp"
+    fail "configuración rechazada; no se aplicó ningún cambio"
+  fi
+
+  backup="$(mktemp "$YUBOX_ETC_DIR/.backhaul-bak.XXXXXX")"
+  if [ -f "$BACKHAUL_CONF" ]; then
+    cp -f "$BACKHAUL_CONF" "$backup"
+    had_config=1
+  fi
+  chmod 600 "$tmp"
+  chown root:root "$tmp" 2>/dev/null || true
+  mv -f "$tmp" "$BACKHAUL_CONF"
+
+  if "$0" apply; then
+    rm -f "$backup"
+    load_config >/dev/null 2>&1 || true
+    echo "OK: modo $BACKHAUL_MODE aplicado"
+    return 0
+  fi
+
+  if [ "$had_config" -eq 1 ]; then
+    mv -f "$backup" "$BACKHAUL_CONF"
+    chmod 600 "$BACKHAUL_CONF"
+    "$0" apply >/dev/null 2>&1 || true
+  else
+    rm -f "$BACKHAUL_CONF" "$backup"
+  fi
+  fail "no se pudo aplicar la nueva configuración; se restauró la anterior"
+}
+
+case "${1:-}" in
+  apply) load_config; apply_mode ;;
+  validate) load_config; do_validate ;;
+  set) set_from_stdin ;;
+  status) status ;;
+  *) echo "Uso: $0 {apply|validate|set|status}" >&2; exit 2 ;;
+esac

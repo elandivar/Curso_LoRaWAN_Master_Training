@@ -1,0 +1,1139 @@
+#!/bin/bash
+
+export DIALOG
+export USE_GUI=0
+
+BACKHAUL_CONF="/etc/yubox/backhaul.conf"
+BACKHAUL_MODE="semtech_udp"
+UDP_SERVER="cloud.yubox.com"
+UDP_PORT_UP="1700"
+UDP_PORT_DOWN="1700"
+MQTT_SERVER=""
+MQTT_TOPIC_PREFIX=""
+MQTT_AUTH="userpass"
+MQTT_USERNAME=""
+MQTT_PASSWORD=""
+MQTT_CA_CERT=""
+MQTT_TLS_CERT=""
+MQTT_TLS_KEY=""
+MQTT_CHIRPSTACK_VERSION="v4"
+MQTT_MARSHALER="json"
+BS_LNS_URI=""
+BS_AUTH="token"
+BS_TOKEN=""
+BS_TRUST=""
+BS_TLS_CERT=""
+BS_TLS_KEY=""
+
+load_backhaul_config() {
+  local line key value
+  [ -f "$BACKHAUL_CONF" ] || return 0
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="${line%$'\r'}"
+    [[ -z "$line" || "$line" =~ ^[[:space:]]*# || "$line" != *=* ]] && continue
+    key="${line%%=*}"; value="${line#*=}"
+    key="$(printf '%s' "$key" | tr -d '[:space:]')"
+    case "$key" in
+      BACKHAUL_MODE) BACKHAUL_MODE="$value" ;;
+      UDP_SERVER) UDP_SERVER="$value" ;;
+      UDP_PORT_UP) UDP_PORT_UP="$value" ;;
+      UDP_PORT_DOWN) UDP_PORT_DOWN="$value" ;;
+      MQTT_SERVER) MQTT_SERVER="$value" ;;
+      MQTT_TOPIC_PREFIX) MQTT_TOPIC_PREFIX="$value" ;;
+      MQTT_AUTH) MQTT_AUTH="$value" ;;
+      MQTT_USERNAME) MQTT_USERNAME="$value" ;;
+      MQTT_PASSWORD) MQTT_PASSWORD="$value" ;;
+      MQTT_CA_CERT) MQTT_CA_CERT="$value" ;;
+      MQTT_TLS_CERT) MQTT_TLS_CERT="$value" ;;
+      MQTT_TLS_KEY) MQTT_TLS_KEY="$value" ;;
+      MQTT_CHIRPSTACK_VERSION) MQTT_CHIRPSTACK_VERSION="$value" ;;
+      MQTT_MARSHALER) MQTT_MARSHALER="$value" ;;
+      BS_LNS_URI) BS_LNS_URI="$value" ;;
+      BS_AUTH) BS_AUTH="$value" ;;
+      BS_TOKEN) BS_TOKEN="$value" ;;
+      BS_TRUST) BS_TRUST="$value" ;;
+      BS_TLS_CERT) BS_TLS_CERT="$value" ;;
+      BS_TLS_KEY) BS_TLS_KEY="$value" ;;
+    esac
+  done < "$BACKHAUL_CONF"
+}
+
+save_backhaul_config() {
+  local dir tmp
+  dir="$(dirname "$BACKHAUL_CONF")"
+  mkdir -p "$dir"
+  tmp="$(mktemp "$dir/.backhaul.XXXXXX")"
+  cat > "$tmp" <<EOF
+BACKHAUL_MODE=$BACKHAUL_MODE
+UDP_SERVER=$UDP_SERVER
+UDP_PORT_UP=$UDP_PORT_UP
+UDP_PORT_DOWN=$UDP_PORT_DOWN
+MQTT_SERVER=$MQTT_SERVER
+MQTT_TOPIC_PREFIX=$MQTT_TOPIC_PREFIX
+MQTT_AUTH=$MQTT_AUTH
+MQTT_USERNAME=$MQTT_USERNAME
+MQTT_PASSWORD=$MQTT_PASSWORD
+MQTT_CA_CERT=$MQTT_CA_CERT
+MQTT_TLS_CERT=$MQTT_TLS_CERT
+MQTT_TLS_KEY=$MQTT_TLS_KEY
+MQTT_CHIRPSTACK_VERSION=$MQTT_CHIRPSTACK_VERSION
+MQTT_MARSHALER=$MQTT_MARSHALER
+BS_LNS_URI=$BS_LNS_URI
+BS_AUTH=$BS_AUTH
+BS_TOKEN=$BS_TOKEN
+BS_TRUST=$BS_TRUST
+BS_TLS_CERT=$BS_TLS_CERT
+BS_TLS_KEY=$BS_TLS_KEY
+EOF
+  chmod 600 "$tmp"
+  chown root:root "$tmp"
+  mv -f "$tmp" "$BACKHAUL_CONF"
+}
+
+valid_port() { [[ "$1" =~ ^[0-9]+$ ]] && (( 10#$1 >= 1 && 10#$1 <= 65535 )); }
+valid_server() { [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._:-]*$ ]]; }
+# ssl/wss hacia brokers remotos; tcp:// solo hacia loopback (ChirpStack
+# instalado en el propio gateway — el tráfico no sale del equipo). ISSUE-022.
+valid_mqtt_server() {
+  [[ "$1" != *@* ]] || return 1
+  [[ "$1" =~ ^(ssl|wss)://[^[:space:]\"\']+$ ]] && return 0
+  [[ "$1" =~ ^tcp://(127\.0\.0\.1|localhost|\[::1\])(:[0-9]+)?/?$ ]]
+}
+mqtt_server_is_local() { [[ "$1" =~ ^tcp:// ]]; }
+valid_topic_prefix() { [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ && "$1" != */ ]]; }
+
+# Prefijo de topic MQTT (ChirpStack v4) por defecto. Para US915/AU915 debe
+# incluir la sub-banda (us915_0, au915_1...) o el NS descarta los mensajes.
+default_topic_prefix() {
+  local region="${1^^}" sb="${2:-}"
+  case "$region" in
+    US915|AU915)
+      [[ "$sb" =~ ^[0-7]$ ]] || sb="$(default_subband "$region")"
+      printf '%s_%s\n' "${region,,}" "$sb" ;;
+    *) printf '%s\n' "${region,,}" ;;
+  esac
+}
+
+install_mqtt_credential() {
+  local source="$1" destination="$2"
+  [ -r "$source" ] || return 1
+  if [ "$(readlink -f "$source")" != "$(readlink -f "$destination" 2>/dev/null || true)" ]; then
+    install -m 640 -o root -g chirpstack "$source" "$destination"
+  else
+    chown root:chirpstack "$destination"
+    chmod 640 "$destination"
+  fi
+}
+
+show_message() {
+  local text="$1"
+  if [ "${USE_GUI:-0}" -eq 1 ] && [ -n "${DIALOG:-}" ]; then
+    "$DIALOG" --msgbox "$text" 9 68 2>/dev/null || true
+  else
+    echo "$text"
+  fi
+}
+
+ask_value() {
+  local label="$1" default="$2" secret="${3:-n}" value
+  if [ "${USE_GUI:-0}" -eq 1 ] && [ -n "${DIALOG:-}" ]; then
+    if [ "$secret" = "y" ]; then
+      # dialog no muestra NINGÚN feedback al teclear salvo con --insecure
+      # (asteriscos); whiptail ya los muestra y no acepta ese flag.
+      if [ "$DIALOG" = "dialog" ]; then
+        value="$("$DIALOG" --stdout --insecure --passwordbox "$label" 10 70 2>/dev/tty)" || return 1
+      else
+        value="$("$DIALOG" --stdout --passwordbox "$label" 10 70 2>/dev/tty)" || return 1
+      fi
+    else
+      value="$("$DIALOG" --stdout --inputbox "$label" 10 70 "$default" 2>/dev/tty)" || return 1
+    fi
+  elif [ "$secret" = "y" ]; then
+    # El eco del salto de línea DEBE ir a stderr: esta función se captura con
+    # $(...) y un echo a stdout contaminaría el valor con un "\n" inicial.
+    read -r -s -p "$label: " value; echo >&2
+  else
+    read -r -p "$label [$default]: " value
+    value="${value:-$default}"
+  fi
+  printf '%s' "$value"
+}
+
+detect_gui() {
+  if command -v dialog >/dev/null 2>&1; then
+    DIALOG="dialog"
+    USE_GUI=1
+    return 0
+  fi
+  if command -v whiptail >/dev/null 2>&1; then
+    DIALOG="whiptail"
+    USE_GUI=1
+    return 0
+  fi
+  return 1
+}
+
+get_status_text() {
+  local JSON
+  JSON="$(ls -1 /opt/yubox-gw/packet_forwarder/global_conf.json.sx1250.* 2>/dev/null | head -n 1)"
+  [ -z "$JSON" ] && echo "No se encontró global_conf." && return 1
+
+  local GATEWAY_ID SERVER REGION PKFWD HOSTAPD AP_MODE AP_SSID MODE MQTTFWD BRIDGEFWD BASICSST CONNECTION REMOTE_ENDPOINT
+  if command -v jq >/dev/null 2>&1; then
+    GATEWAY_ID="$(jq -r '.gateway_conf.gateway_ID // empty' "$JSON" 2>/dev/null)"
+    SERVER="$(jq -r '.gateway_conf.server_address // empty' "$JSON" 2>/dev/null)"
+  else
+    GATEWAY_ID="$(grep -oE '"gateway_ID"[[:space:]]*:[[:space:]]*"[^"]*"' "$JSON" | head -1 | sed 's/.*"\([^"]*\)"$/\1/')"
+    SERVER="$(grep -oE '"server_address"[[:space:]]*:[[:space:]]*"[^"]*"' "$JSON" | head -1 | sed 's/.*"\([^"]*\)"$/\1/')"
+  fi
+  [ -z "$GATEWAY_ID" ] && GATEWAY_ID="(no definido)"
+  [ -z "$SERVER" ] && SERVER="(no definido)"
+  REGION="$(basename "$JSON" | sed 's/global_conf.json.sx1250.\([^.]*\).*/\1/')"
+  if systemctl is-active --quiet yubox-lora-pktfwd.service; then
+    PKFWD="[RUNNING]"
+  elif systemctl is-activating --quiet yubox-lora-pktfwd.service; then
+    PKFWD="[STARTING]"
+  elif systemctl is-failed --quiet yubox-lora-pktfwd.service; then
+    PKFWD="[FAILED] (Check logs: sudo journalctl -u yubox-lora-pktfwd -n 20)"
+  else
+    PKFWD="[STOPPED] / inactive"
+  fi
+
+  if systemctl is-active --quiet hostapd.service; then
+    HOSTAPD="[RUNNING]"
+  else
+    HOSTAPD="[STOPPED] / inactive"
+  fi
+
+  AP_MODE="$(systemctl is-active yubox-ap.service 2>/dev/null || echo inactive)"
+  AP_SSID=""
+  [ -f /etc/hostapd/hostapd.conf ] && AP_SSID="$(grep -E '^ssid=' /etc/hostapd/hostapd.conf 2>/dev/null | cut -d= -f2-)"
+
+  MODE="$(cat /etc/yubox/active-mode 2>/dev/null || true)"
+  REMOTE_ENDPOINT="$(cat /etc/yubox/active-endpoint 2>/dev/null || true)"
+  [ -n "$MODE" ] || MODE="semtech_udp"
+  if systemctl is-active --quiet chirpstack-mqtt-forwarder.service; then
+    MQTTFWD="[RUNNING]"
+  elif systemctl is-failed --quiet chirpstack-mqtt-forwarder.service; then
+    MQTTFWD="[FAILED]"
+  else
+    MQTTFWD="[STOPPED] / inactive"
+  fi
+  if systemctl is-active --quiet chirpstack-gateway-bridge.service; then
+    BRIDGEFWD="[RUNNING]"
+  elif systemctl is-failed --quiet chirpstack-gateway-bridge.service; then
+    BRIDGEFWD="[FAILED]"
+  else
+    BRIDGEFWD="[STOPPED] / inactive"
+  fi
+  if systemctl is-active --quiet yubox-basicstation.service; then
+    BASICSST="[RUNNING]"
+  elif systemctl is-failed --quiet yubox-basicstation.service; then
+    BASICSST="[FAILED]"
+  else
+    BASICSST="[STOPPED] / inactive"
+  fi
+  case "$MODE" in
+    basics_station) CONNECTION="LoRa Basics Station (WebSocket/TLS)" ;;
+    chirpstack_mqtt_v3) CONNECTION="MQTT seguro vía Gateway Bridge (ChirpStack v3)" ;;
+    chirpstack_mqtt*) CONNECTION="ChirpStack MQTT seguro (v4)" ;;
+    pending_chirpstack_mqtt) CONNECTION="MQTT pendiente de configurar con sudo yubox-tool" ;;
+    *) CONNECTION="Semtech UDP directo" ;;
+  esac
+
+  echo "Gateway ID:     $GATEWAY_ID (ingrese en Network Server)"
+  echo "Región:         $REGION"
+  echo "Destino packet forwarder: $SERVER"
+  echo "Conexión activa: $CONNECTION"
+  [ -n "$REMOTE_ENDPOINT" ] && echo "Destino remoto:  $REMOTE_ENDPOINT"
+  echo ""
+  echo "Packet Forwarder: $PKFWD"
+  echo "MQTT Forwarder (v4):  $MQTTFWD"
+  echo "Gateway Bridge (v3):  $BRIDGEFWD"
+  echo "Basics Station:       $BASICSST"
+  echo "WiFi AP:          $HOSTAPD"
+  [ "$AP_MODE" = "active" ] && echo "AVISO: AP activo, wlan0 en modo AP (opción 3 del menú para pasar a cliente WiFi)"
+  [ -n "$AP_SSID" ] && echo "SSID WiFi AP:    $AP_SSID"
+}
+
+show_status() {
+  local txt
+  txt="$(get_status_text)"
+  if [ "$USE_GUI" -eq 1 ]; then
+    if [ "$DIALOG" = "dialog" ]; then
+      dialog --backtitle "Yubox Tool" --title "Estado del Gateway" --msgbox "$txt" 18 70
+    else
+      whiptail --title "Estado del Gateway" --msgbox "$txt" 18 70
+    fi
+  else
+    echo ""; echo "=== Yubox LoRaWAN Gateway - Estado ==="; echo ""; echo "$txt"; echo ""
+    read -r -p "Presione Enter para continuar..."
+  fi
+}
+
+switch_to_client() {
+  [ "$(id -u)" -eq 0 ] || {
+    local m="Ejecute con sudo: sudo yubox-tool"
+    [ "${USE_GUI:-0}" -eq 1 ] && $DIALOG --msgbox "$m" 6 50 2>/dev/null || echo "$m"
+    return 1
+  }
+
+  [ "${USE_GUI:-0}" -eq 1 ] && [ -n "${DIALOG:-}" ] && $DIALOG --infobox "Iniciando modo cliente WiFi..." 4 45 2>/dev/null || echo "Iniciando modo cliente WiFi..."
+
+  command -v nmcli >/dev/null 2>&1 || [ -x /usr/bin/nmcli ] || {
+    local msg="nmcli (NetworkManager) no está instalado. Instale NetworkManager para modo cliente WiFi."
+    [ "${USE_GUI:-0}" -eq 1 ] && [ -n "${DIALOG:-}" ] && $DIALOG --msgbox "$msg" 8 60 2>/dev/null || echo "$msg"
+    return 1
+  }
+  PATH="/usr/bin:$PATH"
+
+  rfkill unblock wifi 2>/dev/null || true
+  nmcli radio wifi on 2>/dev/null || true
+  sleep 1
+
+  local ap_was_active=0
+  if systemctl is-active --quiet hostapd.service 2>/dev/null || systemctl is-active --quiet yubox-ap.service 2>/dev/null; then
+    ap_was_active=1
+    /usr/local/sbin/yubox-ap-disable.sh 2>/dev/null || true
+    sleep 2
+  fi
+
+  rfkill unblock wifi 2>/dev/null || true
+  nmcli radio wifi on 2>/dev/null || true
+  nmcli device set wlan0 managed yes 2>/dev/null || true
+  ip link set wlan0 down 2>/dev/null || true
+  sleep 1
+  ip link set wlan0 up 2>/dev/null || true
+  sleep 2
+
+  local tmp_ssids
+  tmp_ssids="$(mktemp)"
+
+  if [ "${USE_GUI:-0}" -eq 1 ] && [ -n "${DIALOG:-}" ]; then
+    $DIALOG --backtitle "Yubox Tool" --infobox "Escaneando redes WiFi..." 5 40 2>/dev/null
+  else
+    ( while true; do for c in . o O 0; do printf '\rEscaneando redes %s   ' "$c"; sleep 0.15; done; done ) &
+    local spin_pid=$!
+  fi
+
+  if command -v timeout >/dev/null 2>&1; then
+    timeout 20 sh -c 'nmcli device wifi rescan 2>/dev/null; sleep 2; nmcli -t -f SSID device wifi list 2>/dev/null | sed "s/^[^:]*://" | grep -v "^$" | sort -u' > "$tmp_ssids" 2>/dev/null || true
+  else
+    nmcli device wifi rescan 2>/dev/null; sleep 2
+    nmcli -t -f SSID device wifi list 2>/dev/null | sed 's/^[^:]*://' | grep -v '^$' | sort -u > "$tmp_ssids" 2>/dev/null || true
+  fi
+
+  if [ ! -s "$tmp_ssids" ] && command -v iw >/dev/null 2>&1; then
+    iw dev wlan0 scan 2>/dev/null | grep -E '^\s+SSID:' | sed 's/^[[:space:]]*SSID:[[:space:]]*//' | grep -v '^$' | sort -u > "$tmp_ssids" || true
+  fi
+
+  [ "${USE_GUI:-0}" -eq 0 ] && { kill "$spin_pid" 2>/dev/null; wait "$spin_pid" 2>/dev/null; printf '\r%*s\r' 30 ""; }
+
+  if [ ! -s "$tmp_ssids" ]; then
+    rm -f "$tmp_ssids"
+    local msg="No se encontraron redes. Compruebe que wlan0 existe y que NetworkManager está activo (systemctl status NetworkManager)."
+    [ "${USE_GUI:-0}" -eq 1 ] && [ -n "${DIALOG:-}" ] && $DIALOG --msgbox "$msg" 8 65 2>/dev/null || echo "$msg"
+    return 1
+  fi
+
+  local count choice i=1
+  count="$(wc -l < "$tmp_ssids")"
+
+  if [ "$USE_GUI" -eq 1 ]; then
+    local -a menu_args
+    menu_args=()
+    while IFS= read -r ssid; do
+      [ -n "$ssid" ] && menu_args+=("$i" "$ssid") && i=$((i+1))
+    done < "$tmp_ssids"
+    if [ "$DIALOG" = "dialog" ]; then
+      choice="$($DIALOG --stdout --backtitle "Yubox Tool" --menu "Seleccione red WiFi" 18 60 "$count" "${menu_args[@]}" 2>/dev/tty)"
+    else
+      choice="$($DIALOG --stdout --title "Red WiFi" --menu "Seleccione red" 18 60 "$count" "${menu_args[@]}" 2>/dev/tty)"
+    fi
+    if [ -z "$choice" ]; then
+      [ -t 0 ] || echo "Ejecute desde terminal: sudo yubox-tool"
+      rm -f "$tmp_ssids"
+      return 0
+    fi
+  else
+    echo ""; echo "Redes disponibles:"; i=1
+    while IFS= read -r ssid; do
+      [ -n "$ssid" ] && echo "  $i) $ssid" && i=$((i+1))
+    done < "$tmp_ssids"
+    read -r -p "Número de red: " choice
+  fi
+
+  [ -z "$choice" ] && rm -f "$tmp_ssids" && return 0
+  ssid="$(sed -n "${choice}p" "$tmp_ssids")"
+  rm -f "$tmp_ssids"
+  [ -z "$ssid" ] && return 1
+
+  local pass
+  if [ "$USE_GUI" -eq 1 ]; then
+    if [ "$DIALOG" = "dialog" ]; then
+      pass="$(dialog --stdout --insecure --passwordbox "Contraseña para $ssid" 10 60)"
+    else
+      pass="$(whiptail --stdout --passwordbox "Contraseña para $ssid" 10 60)"
+    fi
+  else
+    read -r -s -p "Contraseña: " pass; echo
+  fi
+
+  if [ -z "$pass" ]; then
+    # Sin contraseña: confirmar que es red abierta (antes se cancelaba siempre,
+    # impidiendo conectarse a una WiFi sin clave).
+    if [ "$USE_GUI" -eq 1 ] && [ -n "${DIALOG:-}" ]; then
+      $DIALOG --yesno "Sin contraseña. ¿Conectar como red ABIERTA a \"$ssid\"?" 7 58 2>/dev/null || return 0
+    else
+      local open_ans; read -r -p "Sin contraseña. ¿Red abierta \"$ssid\"? [s/N]: " open_ans
+      case "${open_ans,,}" in s|si|y|yes) ;; *) return 0 ;; esac
+    fi
+  fi
+
+  if [ "$USE_GUI" -eq 1 ]; then
+    $DIALOG --backtitle "Yubox Tool" --infobox "Conectando a $ssid..." 5 45 2>/dev/null || $DIALOG --infobox "Conectando a $ssid..." 5 45 2>/dev/null
+  else
+    echo "Conectando a $ssid..."
+  fi
+
+  rfkill unblock wifi 2>/dev/null || true
+  nmcli radio wifi on 2>/dev/null || true
+  nmcli device set wlan0 managed yes 2>/dev/null || true
+
+  # Borrar perfil previo si existe, para asegurar que se usa la nueva clave
+  nmcli connection delete "$ssid" >/dev/null 2>&1 || true
+
+  local connect_ok=1
+  if [ -n "$pass" ]; then
+    nmcli device wifi connect "$ssid" password "$pass" 2>/dev/null || connect_ok=0
+  else
+    nmcli device wifi connect "$ssid" 2>/dev/null || connect_ok=0
+  fi
+  if [ "$connect_ok" -eq 1 ]; then
+    sleep 3
+    local ip_info
+    ip_info="$(ip -4 addr show wlan0 2>/dev/null | grep 'inet ' || true)"
+    local msg="Conectado a $ssid."
+    [ -n "$ip_info" ] && msg="$msg wlan0 tiene IP. Listo."
+    [ -z "$ip_info" ] && msg="$msg Esperando DHCP (puede tardar unos segundos)."
+    [ "$USE_GUI" -eq 1 ] && $DIALOG --msgbox "$msg" 8 55 2>/dev/null || echo "$msg"
+  else
+    # Restaurar el AP si estaba activo: no dejar el gateway sin acceso.
+    local extra=""
+    if [ "$ap_was_active" -eq 1 ]; then
+      systemctl enable --now yubox-ap.service 2>/dev/null || /usr/local/sbin/yubox-ap-enable.sh 2>/dev/null || true
+      extra=" Se restauró el punto de acceso (AP)."
+    fi
+    local msg="Error al conectar a $ssid. Compruebe la contraseña.$extra Ejecute 'nmcli device wifi list' y 'journalctl -u NetworkManager -n 20'."
+    [ "$USE_GUI" -eq 1 ] && $DIALOG --msgbox "$msg" 10 65 2>/dev/null || echo "$msg"
+  fi
+}
+
+configure_backhaul() {
+  [ "$(id -u)" -eq 0 ] || { show_message "Ejecute con sudo: sudo yubox-tool"; return 1; }
+  load_backhaul_config
+
+  local choice region raw_region cur_sb json_path backup had_config=0
+  json_path="$(ls -1 /opt/yubox-gw/packet_forwarder/global_conf.json.sx1250.* 2>/dev/null | head -n 1)"
+  raw_region="$(basename "${json_path:-x.US915}" | sed 's/.*global_conf.json.sx1250.\([^.]*\).*/\1/')"
+  [ -n "$raw_region" ] || raw_region="US915"
+  cur_sb="$(detect_subband "$raw_region" "$json_path" 2>/dev/null || true)"
+  # Prefijo v4 sugerido: incluye la sub-banda real del gateway (us915_1, etc.).
+  region="$(default_topic_prefix "$raw_region" "$cur_sb")"
+
+  if [ "${USE_GUI:-0}" -eq 1 ]; then
+    choice="$("$DIALOG" --stdout --menu "Método de conexión al Network Server" 15 74 3 \
+      udp "Semtech UDP directo" \
+      mqtt "ChirpStack MQTT seguro (TLS)" \
+      basics "LoRa Basics Station (wss:// - TTN, AWS, etc.)" 2>/dev/tty)" || return 0
+  else
+    echo ""; echo "=== Conexión al Network Server ==="
+    echo "  1) Semtech UDP directo"
+    echo "  2) ChirpStack MQTT seguro (TLS)"
+    echo "  3) LoRa Basics Station (wss:// - TTN, AWS, etc.)"
+    read -r -p "Método [1]: " choice
+    case "${choice:-1}" in 1) choice="udp" ;; 2) choice="mqtt" ;; 3) choice="basics" ;; *) show_message "Opción inválida"; return 1 ;; esac
+  fi
+
+  backup="$(mktemp)"
+  if [ -f "$BACKHAUL_CONF" ]; then cp -f "$BACKHAUL_CONF" "$backup"; had_config=1; fi
+
+  if [ "$choice" = "udp" ]; then
+    local server up down
+    server="$(ask_value "Servidor/IP del Network Server (UDP Semtech, p.ej. ChirpStack, TTN)" "$UDP_SERVER")" || { rm -f "$backup"; return 0; }
+    up="$(ask_value "Puerto UDP upstream" "$UDP_PORT_UP")" || { rm -f "$backup"; return 0; }
+    down="$(ask_value "Puerto UDP downstream" "$UDP_PORT_DOWN")" || { rm -f "$backup"; return 0; }
+    valid_server "$server" || { show_message "Servidor UDP inválido."; rm -f "$backup"; return 1; }
+    valid_port "$up" || { show_message "Puerto UP inválido (1-65535)."; rm -f "$backup"; return 1; }
+    valid_port "$down" || { show_message "Puerto DOWN inválido (1-65535)."; rm -f "$backup"; return 1; }
+    BACKHAUL_MODE="semtech_udp"
+    UDP_SERVER="$server"; UDP_PORT_UP="$up"; UDP_PORT_DOWN="$down"
+  elif [ "$choice" = "basics" ]; then
+    local bs_uri bs_auth bs_token ca_file cert_file key_file cert_dir
+    show_message "Basics Station: el plan de canales (región/sub-banda) lo envía el LNS; solo se configuran el endpoint y las credenciales."
+    bs_uri="$(ask_value "URI del LNS (wss://host:puerto)" "${BS_LNS_URI:-wss://lns.example.com:8887}")" || { rm -f "$backup"; return 0; }
+    [[ "$bs_uri" =~ ^wss://[^[:space:]\"\']+$ ]] || { show_message "La URI debe usar wss:// (TLS) y no contener espacios."; rm -f "$backup"; return 1; }
+
+    if [ "${USE_GUI:-0}" -eq 1 ]; then
+      bs_auth="$("$DIALOG" --stdout --menu "Autenticación con el LNS" 14 70 3 \
+        token "API key / token (TTN, The Things Stack)" \
+        client_cert "Certificado cliente mTLS (AWS IoT Core, etc.)" \
+        none "Solo TLS del servidor (sin autenticación de cliente)" 2>/dev/tty)" || { rm -f "$backup"; return 0; }
+    else
+      echo "  1) API key / token (TTN, The Things Stack)"
+      echo "  2) Certificado cliente mTLS (AWS IoT Core, etc.)"
+      echo "  3) Solo TLS del servidor (sin autenticación de cliente)"
+      read -r -p "Autenticación [1]: " bs_auth
+      case "${bs_auth:-1}" in 1) bs_auth="token" ;; 2) bs_auth="client_cert" ;; 3) bs_auth="none" ;; *) show_message "Opción inválida"; rm -f "$backup"; return 1 ;; esac
+    fi
+
+    cert_dir="/etc/yubox/certs"
+    mkdir -p "$cert_dir"
+    ca_file="$(ask_value "Archivo CA del LNS (vacío para usar las CA del sistema)" "")" || { rm -f "$backup"; return 0; }
+    BS_TRUST=""
+    if [ -n "$ca_file" ]; then
+      [ -r "$ca_file" ] || { show_message "No se puede leer el archivo CA indicado."; rm -f "$backup"; return 1; }
+      install -m 644 "$ca_file" "$cert_dir/bs-trust.crt"
+      BS_TRUST="$cert_dir/bs-trust.crt"
+    fi
+
+    if [ "$bs_auth" = "token" ]; then
+      bs_token="$(ask_value "API key/token del LNS (vacío conserva el actual)" "" y)" || { rm -f "$backup"; return 0; }
+      [ -n "$bs_token" ] || bs_token="$BS_TOKEN"
+      [ -n "$bs_token" ] || { show_message "Se necesita el API key/token del LNS."; rm -f "$backup"; return 1; }
+      BS_TOKEN="$bs_token"
+      BS_TLS_CERT=""; BS_TLS_KEY=""
+    elif [ "$bs_auth" = "client_cert" ]; then
+      cert_file="$(ask_value "Certificado cliente PEM" "")" || { rm -f "$backup"; return 0; }
+      key_file="$(ask_value "Clave privada cliente PEM" "")" || { rm -f "$backup"; return 0; }
+      [ -r "$cert_file" ] && [ -r "$key_file" ] || { show_message "No se puede leer el certificado o la clave cliente."; rm -f "$backup"; return 1; }
+      install -m 644 "$cert_file" "$cert_dir/bs-client.crt"
+      install -m 600 "$key_file" "$cert_dir/bs-client.key"
+      BS_TLS_CERT="$cert_dir/bs-client.crt"; BS_TLS_KEY="$cert_dir/bs-client.key"
+      BS_TOKEN=""
+    else
+      BS_TOKEN=""; BS_TLS_CERT=""; BS_TLS_KEY=""
+    fi
+
+    BACKHAUL_MODE="basics_station"
+    BS_LNS_URI="$bs_uri"; BS_AUTH="$bs_auth"
+  else
+    local cs_version cs_marshaler mqtt_server prefix auth ca_file username password cert_file key_file cert_dir
+    cs_marshaler="$MQTT_MARSHALER"
+    if [ "${USE_GUI:-0}" -eq 1 ]; then
+      cs_version="$("$DIALOG" --stdout --menu "Versión de su servidor ChirpStack" 12 72 2 \
+        v4 "ChirpStack v4 (topics con prefijo regional)" \
+        v3 "ChirpStack v3 (topics gateway/... sin prefijo)" 2>/dev/tty)" || { rm -f "$backup"; return 0; }
+    else
+      echo "  1) ChirpStack v4 (topics con prefijo regional)"
+      echo "  2) ChirpStack v3 (topics gateway/... sin prefijo)"
+      read -r -p "Versión del servidor ChirpStack [1]: " cs_version
+      case "${cs_version:-1}" in 1|v4|V4) cs_version="v4" ;; 2|v3|V3) cs_version="v3" ;; *) show_message "Opción inválida"; rm -f "$backup"; return 1 ;; esac
+    fi
+    mqtt_server="$(ask_value "Broker MQTT (ssl://host:8883, wss://host:puerto; tcp://127.0.0.1:1883 si ChirpStack corre en este gateway)" "${MQTT_SERVER:-ssl://mqtt.example.com:8883}")" || { rm -f "$backup"; return 0; }
+    if [ "$cs_version" = "v4" ]; then
+      prefix="$(ask_value "Prefijo MQTT exacto de la región en ChirpStack" "${MQTT_TOPIC_PREFIX:-$region}")" || { rm -f "$backup"; return 0; }
+      valid_topic_prefix "$prefix" || { show_message "Prefijo MQTT inválido."; rm -f "$backup"; return 1; }
+    else
+      # ChirpStack v3 no usa prefijo regional; el Gateway Bridge publica en
+      # gateway/<id>/... Se conserva el valor previo por si vuelve a v4.
+      prefix="$MQTT_TOPIC_PREFIX"
+      # El marshaler debe coincidir con el del Network Server v3. Un formato
+      # equivocado hace que el servidor descarte los mensajes en silencio.
+      if [ "${USE_GUI:-0}" -eq 1 ]; then
+        cs_marshaler="$("$DIALOG" --stdout --menu "Formato (marshaler) de tu servidor ChirpStack v3" 13 72 3 \
+          json "JSON (lo más común en v3)" \
+          protobuf "Protobuf" \
+          v2_json "JSON legacy (v3 muy antiguos)" 2>/dev/tty)" || { rm -f "$backup"; return 0; }
+      else
+        echo "  1) json (lo más común en v3)"
+        echo "  2) protobuf"
+        echo "  3) v2_json (legacy)"
+        read -r -p "Formato/marshaler [1]: " cs_marshaler
+        case "${cs_marshaler:-1}" in
+          1|json) cs_marshaler="json" ;;
+          2|protobuf) cs_marshaler="protobuf" ;;
+          3|v2_json) cs_marshaler="v2_json" ;;
+          *) show_message "Opción inválida"; rm -f "$backup"; return 1 ;;
+        esac
+      fi
+    fi
+    valid_mqtt_server "$mqtt_server" || { show_message "El broker debe usar ssl:// o wss:// (tcp:// solo hacia 127.0.0.1/localhost) y no contener espacios."; rm -f "$backup"; return 1; }
+
+    if mqtt_server_is_local "$mqtt_server"; then
+      # Broker local (tcp://127.0.0.1): sin TLS ni CA, y credenciales
+      # opcionales — el mosquitto de un ChirpStack instalado en este mismo
+      # gateway suele aceptar conexiones anónimas locales. ISSUE-022.
+      auth="userpass"; MQTT_CA_CERT=""
+      username="$(ask_value "Usuario del broker local (vacío = anónimo)" "$MQTT_USERNAME")" || { rm -f "$backup"; return 0; }
+      password=""
+      if [ -n "$username" ]; then
+        password="$(ask_value "Contraseña del broker local" "" y)" || { rm -f "$backup"; return 0; }
+      fi
+      MQTT_USERNAME="$username"; MQTT_PASSWORD="$password"
+      MQTT_TLS_CERT=""; MQTT_TLS_KEY=""
+    else
+
+    if [ "${USE_GUI:-0}" -eq 1 ]; then
+      auth="$("$DIALOG" --stdout --menu "Autenticación MQTT" 14 68 2 \
+        userpass "Usuario y contraseña sobre TLS" \
+        client_cert "Certificado cliente (mTLS)" 2>/dev/tty)" || { rm -f "$backup"; return 0; }
+    else
+      echo "  1) Usuario y contraseña sobre TLS"
+      echo "  2) Certificado cliente (mTLS)"
+      read -r -p "Autenticación [1]: " auth
+      case "${auth:-1}" in 1) auth="userpass" ;; 2) auth="client_cert" ;; *) show_message "Opción inválida"; rm -f "$backup"; return 1 ;; esac
+    fi
+
+    ca_file="$(ask_value "Archivo CA (vacío para usar las CA del sistema)" "")" || { rm -f "$backup"; return 0; }
+    cert_dir="/etc/yubox/certs"
+    mkdir -p "$cert_dir"
+    chown root:chirpstack "$cert_dir"; chmod 750 "$cert_dir"
+    MQTT_CA_CERT=""
+    if [ -n "$ca_file" ]; then
+      [ -r "$ca_file" ] || { show_message "No se puede leer el archivo CA indicado."; rm -f "$backup"; return 1; }
+      install_mqtt_credential "$ca_file" "$cert_dir/mqtt-ca.crt"
+      MQTT_CA_CERT="$cert_dir/mqtt-ca.crt"
+    fi
+
+    if [ "$auth" = "userpass" ]; then
+      username="$(ask_value "Usuario del broker MQTT" "$MQTT_USERNAME")" || { rm -f "$backup"; return 0; }
+      password="$(ask_value "Contraseña del broker MQTT" "" y)" || { rm -f "$backup"; return 0; }
+      [ -n "$username" ] && [ -n "$password" ] || { show_message "Usuario y contraseña MQTT son obligatorios."; rm -f "$backup"; return 1; }
+      MQTT_USERNAME="$username"; MQTT_PASSWORD="$password"
+      MQTT_TLS_CERT=""; MQTT_TLS_KEY=""
+    else
+      cert_file="$(ask_value "Certificado cliente PEM" "")" || { rm -f "$backup"; return 0; }
+      key_file="$(ask_value "Clave privada cliente PEM" "")" || { rm -f "$backup"; return 0; }
+      [ -r "$cert_file" ] && [ -r "$key_file" ] || { show_message "No se puede leer el certificado o la clave cliente."; rm -f "$backup"; return 1; }
+      install_mqtt_credential "$cert_file" "$cert_dir/mqtt-client.crt"
+      install_mqtt_credential "$key_file" "$cert_dir/mqtt-client.key"
+      MQTT_TLS_CERT="$cert_dir/mqtt-client.crt"; MQTT_TLS_KEY="$cert_dir/mqtt-client.key"
+      MQTT_USERNAME=""; MQTT_PASSWORD=""
+    fi
+
+    fi  # fin broker remoto (ssl/wss) vs broker local (tcp loopback)
+    BACKHAUL_MODE="chirpstack_mqtt"
+    MQTT_SERVER="$mqtt_server"; MQTT_TOPIC_PREFIX="$prefix"; MQTT_AUTH="$auth"
+    MQTT_CHIRPSTACK_VERSION="$cs_version"; MQTT_MARSHALER="$cs_marshaler"
+  fi
+
+  save_backhaul_config
+  if /usr/local/sbin/yubox-backhaul apply; then
+    rm -f "$backup"
+    if [ "$BACKHAUL_MODE" = "semtech_udp" ]; then
+      show_message "Conexión guardada: Semtech UDP directo hacia $UDP_SERVER."
+    elif [ "$BACKHAUL_MODE" = "basics_station" ]; then
+      show_message "Conexión guardada: LoRa Basics Station hacia $BS_LNS_URI. Registre el Gateway EUI en el LNS; el plan de canales lo enviará el servidor."
+    elif [ "$MQTT_CHIRPSTACK_VERSION" = "v3" ]; then
+      show_message "Conexión guardada: MQTT seguro vía Gateway Bridge (ChirpStack v3). Revise el estado y los logs para confirmar la conexión al broker."
+    else
+      show_message "Conexión guardada: ChirpStack MQTT seguro (v4). Revise el estado y los logs para confirmar la conexión al broker."
+    fi
+    return 0
+  fi
+
+  if [ "$had_config" -eq 1 ]; then
+    install -m 600 -o root -g root "$backup" "$BACKHAUL_CONF"
+    /usr/local/sbin/yubox-backhaul apply >/dev/null 2>&1 || true
+  else
+    rm -f "$BACKHAUL_CONF"
+  fi
+  rm -f "$backup"
+  show_message "No se pudo aplicar la nueva conexión. Se restauró la configuración anterior."
+  return 1
+}
+
+# --- Helpers de radio (placa y sub-banda) --------------------------------------
+
+# MHz con un decimal a partir de Hz (entero). Las frecuencias son múltiplos de
+# 100 kHz, así que basta aritmética entera.
+mhz() { printf '%d.%d' "$(( $1 / 1000000 ))" "$(( ($1 / 100000) % 10 ))"; }
+
+band_base125()  { case "${1^^}" in US915) echo 902300000 ;; AU915) echo 915200000 ;; *) echo "" ;; esac; }
+default_subband() { case "${1^^}" in US915) echo 0 ;; AU915) echo 1 ;; *) echo "" ;; esac; }
+
+# Deduce la sub-banda actual (0-7) desde radio_0 del global_conf. Solo US915/AU915.
+detect_subband() {
+  local region="$1" json="$2" base r0
+  base="$(band_base125 "$region")"; [ -n "$base" ] || return 1
+  if command -v jq >/dev/null 2>&1; then
+    r0="$(jq -r '.SX130x_conf.radio_0.freq // empty' "$json" 2>/dev/null)"
+  else
+    r0="$(sed -n 's/.*"radio_0":{[^}]*"freq":\([0-9]*\).*/\1/p' "$json" | head -n1)"
+  fi
+  [[ "$r0" =~ ^[0-9]+$ ]] || return 1
+  local sb=$(( (r0 - base - 400000) / 1600000 ))
+  (( sb >= 0 && sb <= 7 )) || return 1
+  printf '%s' "$sb"
+}
+
+# Preset de placa → GPIO de reset, con opción de número personalizado.
+select_reset_pin() {
+  local current="$1" choice pin
+  if [ "${USE_GUI:-0}" -eq 1 ] && [ -n "${DIALOG:-}" ]; then
+    choice="$("$DIALOG" --stdout --menu "Placa / HAT del concentrador (define el GPIO de reset)" 15 74 4 \
+      17 "RAK2287 Pi HAT              (GPIO 17)" \
+      25 "RAK2004 Pi HAT Ver B        (GPIO 25)" \
+      23 "Semtech CoreCell / genérico (GPIO 23)" \
+      custom "Personalizado (ingresar número BCM)" 2>/dev/tty)" || return 1
+  else
+    {
+      echo ""
+      echo "  Placa / HAT (define el GPIO de reset del concentrador):"
+      echo "    1) RAK2287 Pi HAT              (GPIO 17)"
+      echo "    2) RAK2004 Pi HAT Ver B        (GPIO 25)"
+      echo "    3) Semtech CoreCell / genérico (GPIO 23)"
+      echo "    4) Personalizado (ingresar número BCM)"
+    } >&2
+    read -r -p "Placa [actual: $current]: " choice
+    case "$choice" in
+      1) choice=17 ;; 2) choice=25 ;; 3) choice=23 ;; 4) choice=custom ;; "") choice="$current" ;;
+    esac
+  fi
+  if [ "$choice" = "custom" ]; then
+    pin="$(ask_value "GPIO RESET personalizado (BCM 0-27, no 7-11)" "$current")" || return 1
+  else
+    pin="$choice"
+  fi
+  printf '%s' "$pin"
+}
+
+# Selección de sub-banda para US915/AU915, mostrando el rango de cada una.
+select_subband() {
+  local region="${1^^}" current="$2" base id choice s first last
+  base="$(band_base125 "$region")"; [ -n "$base" ] || return 1
+  case "$region" in US915) id="us915" ;; AU915) id="au915" ;; *) return 1 ;; esac
+  if [ "${USE_GUI:-0}" -eq 1 ] && [ -n "${DIALOG:-}" ]; then
+    local -a m=()
+    for s in 0 1 2 3 4 5 6 7; do
+      first=$(( base + 1600000*s )); last=$(( first + 1400000 ))
+      m+=( "$s" "$(printf '%s_%d  (%s-%s MHz)' "$id" "$s" "$(mhz "$first")" "$(mhz "$last")")" )
+    done
+    choice="$("$DIALOG" --stdout --default-item "${current:-0}" --menu "Sub-banda de $region (debe coincidir con el id de región de tu ChirpStack)" 18 62 8 "${m[@]}" 2>/dev/tty)" || return 1
+  else
+    {
+      echo ""
+      echo "  Sub-banda de $region (el 'id' de región en tu ChirpStack):"
+      for s in 0 1 2 3 4 5 6 7; do
+        first=$(( base + 1600000*s )); last=$(( first + 1400000 ))
+        printf '    %d) %s_%d  (%s-%s MHz)\n' "$s" "$id" "$s" "$(mhz "$first")" "$(mhz "$last")"
+      done
+    } >&2
+    read -r -p "Sub-banda [${current:-0}]: " choice
+    choice="${choice:-${current:-0}}"
+  fi
+  [[ "$choice" =~ ^[0-7]$ ]] || return 1
+  printf '%s' "$choice"
+}
+
+configure_gateway_radio() {
+  [ "$(id -u)" -eq 0 ] || { show_message "Ejecute con sudo: sudo yubox-tool"; return 1; }
+
+  local json old_region region gateway_id reset_pin="17" pwr_pin="none" pins_conf cur_sb
+  json="$(ls -1 /opt/yubox-gw/packet_forwarder/global_conf.json.sx1250.* 2>/dev/null | head -n 1)"
+  [ -n "$json" ] || { show_message "No se encontró global_conf del gateway."; return 1; }
+  old_region="$(basename "$json" | sed 's/global_conf.json.sx1250.\([^.]*\).*/\1/')"
+  region="$old_region"
+  if command -v jq >/dev/null 2>&1; then
+    gateway_id="$(jq -r '.gateway_conf.gateway_ID // empty' "$json" 2>/dev/null)"
+  else
+    gateway_id="$(sed -n 's/.*"gateway_ID"[[:space:]]*:[[:space:]]*"\([0-9A-Fa-f]*\)".*/\1/p' "$json" | head -n 1)"
+  fi
+  pins_conf="/etc/systemd/system/yubox-lora-pktfwd.service.d/10-pins.conf"
+  [ -f "$pins_conf" ] && reset_pin="$(sed -n 's/^Environment=RESET_PIN=//p' "$pins_conf" | tail -n 1)"
+  [ -f "$pins_conf" ] && pwr_pin="$(sed -n 's/^Environment=PWR_PIN=//p' "$pins_conf" | tail -n 1)"
+  cur_sb="$(detect_subband "$old_region" "$json" 2>/dev/null || true)"
+
+  # Recolección secuencial: región → placa/reset → sub-banda (si aplica) → GW ID → PWR.
+  local new_region new_gwid new_rst new_pwr new_sb=""
+  new_region="$(ask_value "Región (AU915/US915/EU868/AS923)" "$region")" || return 0
+  new_region="${new_region^^}"
+  case "$new_region" in
+    AU915|US915|EU868|AS923) ;;
+    CN470|IN865|KR920|RU864) show_message "Región $new_region aún no implementada (plan de frecuencias pendiente). Use US915, AU915, EU868 o AS923."; return 1 ;;
+    *) show_message "Región inválida."; return 1 ;;
+  esac
+
+  new_rst="$(select_reset_pin "$reset_pin")" || return 0
+
+  case "$new_region" in
+    US915|AU915)
+      local sb_default="${cur_sb:-$(default_subband "$new_region")}"
+      new_sb="$(select_subband "$new_region" "$sb_default")" || return 0
+      ;;
+  esac
+
+  new_gwid="$(ask_value "Gateway ID de 16 hex (déjelo tal cual salvo indicación del Network Server)" "$gateway_id")" || return 0
+
+  # GPIO PWR: la mayoría de HATs (incl. RAK2287) no lo usan. Se oculta tras una
+  # confirmación de "avanzado"; por defecto queda 'none'.
+  new_pwr="$pwr_pin"
+  local want_pwr="n"
+  if [ "${USE_GUI:-0}" -eq 1 ] && [ -n "${DIALOG:-}" ]; then
+    "$DIALOG" --yesno "¿Configurar GPIO PWR (avanzado)? La mayoría de placas no lo usan." 7 62 2>/dev/tty && want_pwr="y"
+  else
+    local pwr_ans; read -r -p "¿Configurar GPIO PWR? (avanzado, casi nunca) [s/N]: " pwr_ans
+    case "${pwr_ans,,}" in s|si|y|yes) want_pwr="y" ;; esac
+  fi
+  if [ "$want_pwr" = "y" ]; then
+    new_pwr="$(ask_value "GPIO PWR (BCM o none)" "$pwr_pin")" || return 0
+  fi
+
+  new_gwid="$(printf '%s' "$new_gwid" | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]')"
+  [[ "$new_gwid" =~ ^[0-9A-F]{16}$ ]] || { show_message "Gateway ID inválido: debe contener 16 dígitos hexadecimales."; return 1; }
+  [[ "$new_rst" =~ ^[0-9]+$ ]] && (( 10#$new_rst >= 0 && 10#$new_rst <= 27 )) && (( 10#$new_rst < 7 || 10#$new_rst > 11 )) || { show_message "GPIO RESET inválido o reservado para SPI."; return 1; }
+  if [[ "${new_pwr,,}" == "none" || "${new_pwr,,}" == "off" ]]; then
+    new_pwr="none"
+  elif [[ "$new_pwr" =~ ^[0-9]+$ ]] && (( 10#$new_pwr >= 0 && 10#$new_pwr <= 27 )) && (( 10#$new_pwr < 7 || 10#$new_pwr > 11 )); then
+    [ "$new_pwr" != "$new_rst" ] || { show_message "RESET y PWR no pueden usar el mismo GPIO."; return 1; }
+  else
+    show_message "GPIO PWR inválido o reservado para SPI."
+    return 1
+  fi
+
+  load_backhaul_config
+  local endpoint up down new_json
+  if [ "$BACKHAUL_MODE" = "chirpstack_mqtt" ] || [ "$BACKHAUL_MODE" = "basics_station" ]; then
+    # En MQTT el pkt fwd apunta a localhost; en Basics Station el global_conf
+    # no se usa (station recibe el plan del LNS) pero se mantiene coherente.
+    endpoint="127.0.0.1"; up="1700"; down="1700"
+  else
+    valid_server "$UDP_SERVER" && valid_port "$UDP_PORT_UP" && valid_port "$UDP_PORT_DOWN" || {
+      show_message "La conexión UDP contiene valores inválidos. Configúrela primero desde el menú."
+      return 1
+    }
+    endpoint="$UDP_SERVER"; up="$UDP_PORT_UP"; down="$UDP_PORT_DOWN"
+  fi
+  new_json="$(mktemp)"
+  if ! /usr/local/sbin/yubox-write-global-conf.sh "$new_region" "$endpoint" "$up" "$down" "$new_gwid" "$new_json" "$new_sb"; then
+    rm -f "$new_json"; show_message "No se pudo generar la configuración regional."; return 1
+  fi
+  rm -f /opt/yubox-gw/packet_forwarder/global_conf.json.sx1250.*
+  install -m 644 "$new_json" "/opt/yubox-gw/packet_forwarder/global_conf.json.sx1250.$new_region"
+  rm -f "$new_json"
+
+  # Los pines aplican a los dos servicios que resetean el concentrador.
+  local svc_unit
+  for svc_unit in yubox-lora-pktfwd yubox-basicstation; do
+    mkdir -p "/etc/systemd/system/${svc_unit}.service.d"
+    cat > "/etc/systemd/system/${svc_unit}.service.d/10-pins.conf" <<EOF
+[Service]
+Environment=RESET_PIN=$new_rst
+Environment=PWR_PIN=$new_pwr
+EOF
+  done
+
+  # Sincroniza el prefijo v4 con la sub-banda elegida: si era el default de la
+  # región+sub-banda anterior, se actualiza al de la nueva (evita que en v4 el
+  # NS descarte por prefijo desalineado con los canales).
+  if [ "$MQTT_TOPIC_PREFIX" = "$(default_topic_prefix "$old_region" "$cur_sb")" ]; then
+    MQTT_TOPIC_PREFIX="$(default_topic_prefix "$new_region" "$new_sb")"
+    save_backhaul_config
+  fi
+  systemctl daemon-reload
+  local sb_msg=""; [ -n "$new_sb" ] && sb_msg=" (sub-banda ${new_region,,}_${new_sb})"
+  if /usr/local/sbin/yubox-backhaul apply; then
+    show_message "Configuración de radio guardada. Región: $new_region$sb_msg; Gateway ID: $new_gwid."
+  else
+    show_message "La radio se guardó, pero no pudo reiniciarse la conexión al Network Server."
+    return 1
+  fi
+}
+
+# Construye el reporte de diagnóstico (texto plano). Lo usan la TUI y la
+# interfaz web (`yubox-tool diag`), para que ambas muestren exactamente lo mismo.
+diagnostics_report() {
+  local report="" json region gid mode svc log sb
+  report+="=== Diagnóstico del gateway ==="$'\n'$'\n'
+
+  # 1. Reloj (NTP) — un reloj mal desincroniza el TLS
+  if [ "$(timedatectl show -p NTPSynchronized --value 2>/dev/null)" = "yes" ]; then
+    report+="[OK] Reloj sincronizado por NTP"$'\n'
+  else
+    report+="[!!] Reloj NO sincronizado — el TLS puede fallar hasta que NTP ajuste la hora"$'\n'
+  fi
+
+  mode="$(cat /etc/yubox/active-mode 2>/dev/null || echo semtech_udp)"
+
+  # 2 y 3. Concentrador y proceso de radio (depende del modo: en Basics
+  # Station el concentrador lo maneja station y lora_pkt_fwd DEBE estar parado)
+  if [ "$mode" = "basics_station" ]; then
+    if systemctl is-active --quiet yubox-lora-pktfwd; then
+      report+="[!!] lora_pkt_fwd está corriendo: conflicto de radio con Basics Station"$'\n'
+    else
+      report+="[OK] lora_pkt_fwd detenido (correcto en modo Basics Station)"$'\n'
+    fi
+  else
+    if journalctl -u yubox-lora-pktfwd -b --no-pager 2>/dev/null | grep -q "concentrator started"; then
+      local cv
+      cv="$(journalctl -u yubox-lora-pktfwd -b --no-pager 2>/dev/null | grep -oE 'chip version is 0x[0-9A-Fa-f]+' | tail -n1)"
+      report+="[OK] Concentrador iniciado (${cv:-chip OK})"$'\n'
+    elif journalctl -u yubox-lora-pktfwd -b --no-pager 2>/dev/null | grep -qi "failed to start the concentrator"; then
+      report+="[!!] Concentrador NO arranca — revise el GPIO de reset o reasiente el HAT"$'\n'
+    else
+      report+="[--] Estado del concentrador aún desconocido (sin logs todavía)"$'\n'
+    fi
+    if systemctl is-active --quiet yubox-lora-pktfwd; then
+      report+="[OK] Packet forwarder corriendo"$'\n'
+    else
+      report+="[!!] Packet forwarder detenido o fallido"$'\n'
+    fi
+  fi
+
+  # 4. Backhaul (según el modo activo)
+  case "$mode" in
+    basics_station)
+      if systemctl is-active --quiet yubox-basicstation; then
+        # Solo el log de la ejecución actual del servicio: los fallos de
+        # arranques anteriores (p. ej. un GPIO mal configurado ya corregido)
+        # no deben producir falsas alarmas.
+        local inv
+        inv="$(systemctl show -p InvocationID --value yubox-basicstation 2>/dev/null)"
+        if [ -n "$inv" ]; then
+          log="$(journalctl "_SYSTEMD_INVOCATION_ID=$inv" --no-pager 2>/dev/null)"
+        else
+          log="$(journalctl -u yubox-basicstation -b --no-pager 2>/dev/null | tail -n 60)"
+        fi
+        # Se clasifica por el ÚLTIMO marcador del log, no por presencia: tras
+        # un corte de luz hay errores transitorios (DNS sin red, drift del
+        # reloj) que no deben tapar el éxito posterior. Patrones anclados a
+        # frases literales de station: un 401/403 "a secas" matchea números
+        # sueltos (p. ej. "excessive clock drifts ... 403.2ppm").
+        local marker
+        marker="$(printf '%s' "$log" | grep -ioE "no temperature sensor found\.|concentrator start failed|failed to set sx1250[^ ]*|rf_chain is disabled|radio layer failed to tx|lgw_send failed|forbidden|unauthorized|rejected|http[^0-9a-z]*40[13]|tc connect failed|ws connect failed|failed to get an ip address|concentrator started|router_config|connected to muxs|ws connected" | tail -n 1)"
+        case "${marker,,}" in
+          "no temperature sensor found."|"concentrator start failed"|failed\ to\ set\ sx1250*)
+            report+="[!!] Basics Station: la radio no inicia — revise GPIO de reset / HAT"$'\n' ;;
+          "rf_chain is disabled"|"radio layer failed to tx"|"lgw_send failed")
+            report+="[!!] Basics Station: recibe pero NO transmite downlinks — falta tx_enable en radio_0 (station.conf)"$'\n' ;;
+          forbidden|unauthorized|rejected|http*40[13])
+            report+="[!!] Basics Station: el LNS rechazó las credenciales — revise el token/certificado"$'\n' ;;
+          "tc connect failed"|"ws connect failed"|"failed to get an ip address")
+            report+="[!!] Basics Station: sin conexión con el LNS — revise la red/DNS del gateway"$'\n' ;;
+          "concentrator started"|"router_config"|"connected to muxs"|"ws connected")
+            report+="[OK] Basics Station conectado al LNS (radio iniciada, plan de canales recibido)"$'\n' ;;
+          *)
+            report+="[--] Basics Station activo; sin confirmación de conexión aún (revise logs)"$'\n' ;;
+        esac
+      else
+        report+="[!!] Basics Station no está activo"$'\n'
+      fi
+      ;;
+    chirpstack_mqtt_v3|chirpstack_mqtt)
+      [ "$mode" = "chirpstack_mqtt_v3" ] && svc="chirpstack-gateway-bridge" || svc="chirpstack-mqtt-forwarder"
+      if systemctl is-active --quiet "$svc"; then
+        log="$(journalctl -u "$svc" -b --no-pager 2>/dev/null | tail -n 40)"
+        if printf '%s' "$log" | grep -qi "connected to mqtt broker"; then
+          report+="[OK] MQTT ($svc): conectado al broker"$'\n'
+        elif printf '%s' "$log" | grep -qi "identifier rejected"; then
+          report+="[!!] MQTT: 'identifier rejected' (client_id vacío) — reconfigure la conexión"$'\n'
+        elif printf '%s' "$log" | grep -qiE "not authoris|not authoriz|bad user"; then
+          report+="[!!] MQTT: credenciales rechazadas por el broker"$'\n'
+        else
+          report+="[--] MQTT ($svc) activo pero sin confirmar conexión — revise los logs"$'\n'
+        fi
+      else
+        report+="[!!] MQTT ($svc) no está activo"$'\n'
+      fi
+      ;;
+    pending_chirpstack_mqtt)
+      report+="[!!] MQTT pendiente de configurar (ejecute 'Configurar conexión')"$'\n'
+      ;;
+    *)
+      report+="[OK] Modo Semtech UDP directo"$'\n'
+      ;;
+  esac
+
+  # 5. Región / sub-banda / Gateway ID
+  json="$(ls -1 /opt/yubox-gw/packet_forwarder/global_conf.json.sx1250.* 2>/dev/null | head -n 1)"
+  if [ -n "$json" ]; then
+    region="$(basename "$json" | sed 's/global_conf.json.sx1250.\([^.]*\).*/\1/')"
+    if command -v jq >/dev/null 2>&1; then
+      gid="$(jq -r '.gateway_conf.gateway_ID // empty' "$json" 2>/dev/null)"
+    else
+      gid="$(sed -n 's/.*"gateway_ID"[[:space:]]*:[[:space:]]*"\([0-9A-Fa-f]*\)".*/\1/p' "$json" | head -n1)"
+    fi
+    sb="$(detect_subband "$region" "$json" 2>/dev/null || true)"
+    # El nombre del servidor donde registrar el gateway depende del modo activo.
+    local ns_label
+    case "$mode" in
+      basics_station) ns_label="el LNS (TTN / The Things Stack, etc.)" ;;
+      chirpstack_mqtt_v3|chirpstack_mqtt|pending_chirpstack_mqtt) ns_label="ChirpStack" ;;
+      *) ns_label="el Network Server (ChirpStack, TTN, etc.)" ;;
+    esac
+    report+=$'\n'
+    report+="Región: $region${sb:+  (sub-banda ${region,,}_${sb})}"$'\n'
+    report+="Gateway ID: ${gid:-desconocido}  <- debe estar registrado en $ns_label"$'\n'
+  fi
+
+  report+=$'\n'
+  case "$mode" in
+    basics_station)
+      report+="Nota: en Basics Station la conexión solo se completa si el EUI está"$'\n'
+      report+="registrado en el LNS; un rechazo aparece en los logs como 401/403."$'\n'
+      ;;
+    chirpstack_mqtt_v3|chirpstack_mqtt|pending_chirpstack_mqtt)
+      report+="Nota: 'conectado al broker' no implica que ChirpStack lo vea; hace falta"$'\n'
+      report+="el gateway registrado y que fluyan los event/stats."$'\n'
+      ;;
+    *)
+      report+="Nota: UDP no confirma la entrega: si el gateway no está registrado en"$'\n'
+      report+="el Network Server, los paquetes se descartan en silencio."$'\n'
+      ;;
+  esac
+
+  printf '%s' "$report"
+}
+
+run_diagnostics() {
+  local report
+  report="$(diagnostics_report)"
+  if [ "$USE_GUI" -eq 1 ] && [ -n "${DIALOG:-}" ]; then
+    "$DIALOG" --title "Diagnóstico del gateway" --msgbox "$report" 22 76
+  else
+    echo ""; printf '%s\n' "$report"
+    read -r -p "Presione Enter para continuar..."
+  fi
+}
+
+# Habilita/deshabilita la interfaz web. Apagada por omisión: solo existe
+# superficie web cuando el operador la activa aquí y define credenciales.
+configure_web() {
+  [ "$(id -u)" -eq 0 ] || { show_message "Ejecute con sudo: sudo yubox-tool"; return 1; }
+
+  local state action
+  state="$(systemctl is-enabled yubox-web.service 2>/dev/null || echo disabled)"
+  if [ "${USE_GUI:-0}" -eq 1 ] && [ -n "${DIALOG:-}" ]; then
+    action="$("$DIALOG" --stdout --menu "Interfaz web (estado actual: $state)" 12 66 2 \
+      enable "Habilitar (pide usuario y contraseña)" \
+      disable "Deshabilitar y detener" 2>/dev/tty)" || return 0
+  else
+    echo ""; echo "=== Interfaz web (estado actual: $state) ==="
+    echo "  1) Habilitar (pide usuario y contraseña)"
+    echo "  2) Deshabilitar y detener"
+    read -r -p "Opción [1]: " action
+    case "${action:-1}" in 1) action="enable" ;; 2) action="disable" ;; *) show_message "Opción inválida"; return 1 ;; esac
+  fi
+
+  if [ "$action" = "disable" ]; then
+    systemctl disable --now yubox-web.service 2>/dev/null || true
+    show_message "Interfaz web deshabilitada y detenida."
+    return 0
+  fi
+
+  command -v python3 >/dev/null 2>&1 || { show_message "python3 no está disponible en la imagen."; return 1; }
+  command -v openssl >/dev/null 2>&1 || { show_message "openssl no está disponible en la imagen."; return 1; }
+
+  # Usuario de servicio sin privilegios, con acceso de lectura al journal.
+  getent group yubox-web >/dev/null 2>&1 || groupadd --system yubox-web
+  id yubox-web >/dev/null 2>&1 || useradd --system --gid yubox-web --home /nonexistent --shell /usr/sbin/nologin yubox-web
+  usermod -aG systemd-journal yubox-web 2>/dev/null || true
+
+  local web_user web_pass web_pass2
+  web_user="$(ask_value "Usuario para la interfaz web" "admin")" || return 0
+  [[ "$web_user" =~ ^[A-Za-z0-9._-]{1,32}$ ]] || { show_message "Usuario inválido (letras, números, . _ -)."; return 1; }
+  web_pass="$(ask_value "Contraseña (mínimo 8 caracteres)" "" y)" || return 0
+  [ "${#web_pass}" -ge 8 ] || { show_message "La contraseña debe tener al menos 8 caracteres."; return 1; }
+  web_pass2="$(ask_value "Repita la contraseña" "" y)" || return 0
+  [ "$web_pass" = "$web_pass2" ] || { show_message "Las contraseñas no coinciden."; return 1; }
+
+  # Hash PBKDF2 (la contraseña viaja por entorno, no por argv).
+  local web_hash
+  web_hash="$(WEB_PASS="$web_pass" python3 -c '
+import hashlib, os
+salt = os.urandom(16)
+pw = os.environ["WEB_PASS"].encode()
+derived = hashlib.pbkdf2_hmac("sha256", pw, salt, 200000)
+print("pbkdf2$200000$%s$%s" % (salt.hex(), derived.hex()))
+')" || { show_message "No se pudo generar el hash de la contraseña."; return 1; }
+
+  # Certificado TLS autofirmado (el navegador avisará, pero el canal va cifrado).
+  local cert_dir="/etc/yubox/web-certs"
+  mkdir -p "$cert_dir"
+  if [ ! -f "$cert_dir/web.crt" ] || [ ! -f "$cert_dir/web.key" ]; then
+    openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
+      -subj "/CN=yubox-gateway" \
+      -keyout "$cert_dir/web.key" -out "$cert_dir/web.crt" >/dev/null 2>&1 || {
+      show_message "No se pudo generar el certificado TLS."; return 1; }
+  fi
+  chown root:yubox-web "$cert_dir" "$cert_dir/web.key" "$cert_dir/web.crt"
+  chmod 750 "$cert_dir"; chmod 640 "$cert_dir/web.key"; chmod 644 "$cert_dir/web.crt"
+
+  local tmp_conf
+  tmp_conf="$(mktemp /etc/yubox/.web.XXXXXX)"
+  cat > "$tmp_conf" <<EOF
+WEB_USER=$web_user
+WEB_HASH=$web_hash
+WEB_BIND=0.0.0.0
+WEB_PORT=8443
+WEB_CERT=$cert_dir/web.crt
+WEB_KEY=$cert_dir/web.key
+EOF
+  chown root:yubox-web "$tmp_conf"; chmod 640 "$tmp_conf"
+  mv -f "$tmp_conf" /etc/yubox/web.conf
+
+  systemctl daemon-reload
+  if systemctl enable --now yubox-web.service; then
+    local urls ip
+    urls=""
+    for ip in $(hostname -I 2>/dev/null); do urls="$urls  https://$ip:8443"$'\n'; done
+    show_message "Interfaz web habilitada (usuario: $web_user). Acceda en:"$'\n'"${urls:-  https://<ip-del-gateway>:8443}"$'\n'"El certificado es autofirmado: el navegador mostrará una advertencia."
+  else
+    show_message "No se pudo iniciar la interfaz web. Revise: journalctl -u yubox-web"
+    return 1
+  fi
+}
+
+main_menu() {
+  detect_gui || true
+  if [ "${USE_GUI:-0}" -eq 1 ] && [ ! -t 0 ]; then
+    USE_GUI=0
+  fi
+
+  while true; do
+    local choice
+    if [ "$USE_GUI" -eq 1 ] && [ -n "${DIALOG:-}" ]; then
+      # Usar la herramienta detectada ($DIALOG) con la UI en /dev/tty; cancelar
+      # el menú principal (ESC) sale de forma limpia.
+      choice="$("$DIALOG" --stdout --backtitle "Yubox Tool" --menu "Yubox LoRaWAN Gateway" 20 68 8 \
+        1 "Ver estado del gateway" \
+        2 "Diagnosticar (chequeo completo)" \
+        3 "Cambiar a modo cliente WiFi" \
+        4 "Configurar radio (región, sub-banda, placa, GPIO)" \
+        5 "Configurar conexión (UDP / MQTT / Basics Station)" \
+        6 "Interfaz web (habilitar/deshabilitar)" \
+        7 "Salir" 2>/dev/tty)" || choice="__cancel__"
+    else
+      echo ""; echo "=== Yubox Tool ==="
+      echo "  1) Ver estado del gateway"
+      echo "  2) Diagnosticar (chequeo completo)"
+      echo "  3) Cambiar a modo cliente WiFi"
+      echo "  4) Configurar radio (región, sub-banda, placa, GPIO)"
+      echo "  5) Configurar conexión (UDP / MQTT / Basics Station)"
+      echo "  6) Interfaz web (habilitar/deshabilitar)"
+      echo "  7) Salir"
+      read -r -p "Opción (Enter para refrescar): " choice
+    fi
+
+    choice="${choice//[[:space:]]}"
+    case "$choice" in
+      1) show_status ;;
+      2) run_diagnostics ;;
+      3) switch_to_client ;;
+      4) configure_gateway_radio ;;
+      5) configure_backhaul ;;
+      6) configure_web ;;
+      7|__cancel__) exit 0 ;;
+      "") : ;;  # Enter en modo texto: refrescar el menú, no salir
+      *) [ "${USE_GUI:-0}" -eq 1 ] && [ -n "${DIALOG:-}" ] && "$DIALOG" --msgbox "Opción inválida" 5 30 2>/dev/tty || echo "Opción inválida" ;;
+    esac
+  done
+}
+
+case "$(basename "$0"):${1:-}" in
+  yubox-status:*) get_status_text; echo ;;
+  *:status) get_status_text; echo ;;
+  *:diag) diagnostics_report ;;
+  *) main_menu ;;
+esac
