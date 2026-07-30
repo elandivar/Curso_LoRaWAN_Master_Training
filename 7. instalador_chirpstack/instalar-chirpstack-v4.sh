@@ -682,6 +682,15 @@ if ask_yes_no "¿Apuntar ahora la radio del gateway a este ChirpStack (Semtech U
   if printf 'BACKHAUL_MODE=semtech_udp\nUDP_SERVER=127.0.0.1\nUDP_PORT_UP=%s\nUDP_PORT_DOWN=%s\n' \
       "$UDP_PORT" "$UDP_PORT" | root "$YUBOX_BACKHAUL" set; then
     GATEWAY_SWITCHED="yes"
+    # La exclusividad de modos de la imagen apaga y deshabilita el Gateway
+    # Bridge al pasar a semtech_udp (lo considera parte del modo "v3 remoto").
+    # En este escenario el bridge ES el destino local del UDP: se rehabilita
+    # DESPUÉS del cambio de modo, y por eso este paso va al final del script.
+    root systemctl enable --now chirpstack-gateway-bridge
+    if ! root systemctl is-active --quiet chirpstack-gateway-bridge; then
+      root journalctl -u chirpstack-gateway-bridge -n 30 --no-pager || true
+      die "El Gateway Bridge no quedó activo tras el cambio de modo."
+    fi
   else
     warn "No se pudo cambiar el modo del gateway. Hazlo con: sudo yubox-tool -> Configurar conexión -> Semtech UDP directo -> 127.0.0.1:${UDP_PORT}."
   fi
