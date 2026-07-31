@@ -22,9 +22,10 @@ decodificado por el payload codec del curso, y grafica los campos
 `temp`/`hum` como alternativa).
 
 No hay backend: es una página estática servida por un servicio systemd
-(`visor-lorawan`). Las librerías mqtt.js y Chart.js se instalan localmente
-en el gateway, así que el aula no necesita salida a Internet para usar el
-visor (solo se necesita Internet durante la instalación).
+(`visor-lorawan`). Las librerías mqtt.js y Chart.js vienen incluidas en
+esta carpeta del repo y se instalan localmente en el gateway, así que ni
+la instalación desde el repo clonado ni el uso del visor necesitan acceso
+a ningún CDN externo (que suele estar bloqueado o fallar en redes de aula).
 
 ## Requisitos
 
@@ -52,9 +53,10 @@ puerto WebSockets de Mosquitto (por defecto **9001**), respalda cualquier
 configuración que toque y verifica al final que todo quedó funcionando
 (broker clásico incluido: si algo falla, restaura y aborta).
 
-Las librerías de terceros se descargan con versión y SHA-256 fijos: si el
-CDN entregara un archivo distinto al esperado, la instalación se detiene
-sin instalar nada.
+Si el script corre desde el repo clonado usa las copias locales de la
+página y las librerías; con el modo `curl | bash` las descarga del propio
+repo del curso, verificando las librerías con SHA-256 fijo: si llegara un
+archivo distinto al esperado, la instalación se detiene sin instalar nada.
 
 ## Desinstalación
 

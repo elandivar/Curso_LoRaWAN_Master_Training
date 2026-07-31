@@ -7,8 +7,10 @@
 # Instala y configura:
 #   - Un listener WebSockets en Mosquitto (para que el navegador pueda
 #     suscribirse al broker; el listener clásico 1883 queda local como está).
-#   - La página del visor + librerías (mqtt.js y Chart.js, descargadas con
-#     versión y SHA-256 fijos: si el CDN entregara otra cosa, se aborta).
+#   - La página del visor + librerías (mqtt.js y Chart.js). Todo viene
+#     incluido en el repo del curso: si el script corre desde el repo
+#     clonado usa las copias locales; si corre suelto (curl | bash) las
+#     descarga del propio repo, con SHA-256 fijo para las librerías.
 #   - Un servicio systemd (visor-lorawan) que sirve la página por HTTP.
 #
 # Los alumnos solo abren http://IP_DEL_GATEWAY:PUERTO en su navegador.
@@ -23,10 +25,10 @@ MOSQ_VISOR_CONF="${MOSQ_CONF_DIR}/visor-websockets.conf"
 
 RAW_BASE="https://raw.githubusercontent.com/elandivar/Curso_LoRaWAN_Master_Training/main/8.%20visor_web"
 
-# Librerías de terceros: versión y hash fijos (fail-closed).
-MQTT_JS_URL="https://cdn.jsdelivr.net/npm/mqtt@5.10.1/dist/mqtt.min.js"
+# Librerías de terceros incluidas en el repo del curso (mqtt.js 5.10.1 y
+# Chart.js 4.4.7), con hash fijo para verificar la copia descargada cuando
+# el script no corre desde el repo clonado (fail-closed).
 MQTT_JS_SHA256="b088a7f9045df4e478dbc378f41125066e43d9c602755ee4c5cda0f3e9380ba0"
-CHART_JS_URL="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"
 CHART_JS_SHA256="206b6e8bb00fc7bba2c7ee80ca41db3e9e05ba7be0aa35abeba9cfd5357f5d0e"
 
 # ---------- Presentación ----------
@@ -164,39 +166,45 @@ done
 info "Instalando la página del visor en ${VISOR_DIR}..."
 root install -d -m 0755 "$VISOR_DIR"
 
-# index.html: se toma de la copia local si el script corre desde el repo
-# clonado; si no, se descarga del repo del curso.
+# Cada archivo se toma de la copia local si el script corre desde el repo
+# clonado; si no, se descarga del propio repo del curso. Las librerías de
+# terceros se verifican por SHA-256 cuando vienen descargadas.
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || true)"
-if [[ -n "$SCRIPT_DIR" && -f "${SCRIPT_DIR}/index.html" ]]; then
-  root install -m 0644 "${SCRIPT_DIR}/index.html" "${VISOR_DIR}/index.html"
-else
+
+instalar_archivo() {
+  local fname="$1"
+  local expected_sha="${2:-}"
+  local actual_sha
+
+  if [[ -n "$SCRIPT_DIR" && -f "${SCRIPT_DIR}/${fname}" ]]; then
+    root install -m 0644 "${SCRIPT_DIR}/${fname}" "${VISOR_DIR}/${fname}"
+    return 0
+  fi
+
   TMP_DL="$(mktemp)"
-  curl -fsSL "${RAW_BASE}/index.html" -o "$TMP_DL" \
-    || die "No se pudo descargar index.html del repo del curso (¿hay Internet?)."
-  grep -q "Visor LoRaWAN" "$TMP_DL" || die "El index.html descargado no parece válido."
-  root install -m 0644 "$TMP_DL" "${VISOR_DIR}/index.html"
+  curl -fsSL "${RAW_BASE}/${fname}" -o "$TMP_DL" \
+    || { rm -f "$TMP_DL"; die "No se pudo descargar ${fname} del repo del curso (¿hay Internet?)."; }
+  if [[ -n "$expected_sha" ]]; then
+    actual_sha="$(sha256sum "$TMP_DL" | awk '{print $1}')"
+    [[ "$actual_sha" == "$expected_sha" ]] \
+      || { rm -f "$TMP_DL"; die "La verificación SHA-256 de ${fname} falló; no se instaló nada."; }
+  fi
+  root install -m 0644 "$TMP_DL" "${VISOR_DIR}/${fname}"
   rm -f "$TMP_DL"
-fi
+}
+
+instalar_archivo "index.html"
+grep -q "Visor LoRaWAN" "${VISOR_DIR}/index.html" \
+  || die "El index.html instalado no parece válido."
+
+info "Instalando librerías (mqtt.js y Chart.js)..."
+instalar_archivo "mqtt.min.js" "$MQTT_JS_SHA256"
+instalar_archivo "chart.umd.min.js" "$CHART_JS_SHA256"
 
 # config.js: comunica a la página el puerto WebSockets elegido.
 printf 'window.VISOR_WS_PORT = %s;\n' "$WS_PORT" \
   | root tee "${VISOR_DIR}/config.js" >/dev/null
 root chmod 0644 "${VISOR_DIR}/config.js"
-
-info "Descargando librerías (mqtt.js y Chart.js) con verificación SHA-256..."
-for entry in \
-  "mqtt.min.js|${MQTT_JS_URL}|${MQTT_JS_SHA256}" \
-  "chart.umd.min.js|${CHART_JS_URL}|${CHART_JS_SHA256}"; do
-  IFS='|' read -r fname url expected_sha <<<"$entry"
-  TMP_DL="$(mktemp)"
-  curl -fsSL "$url" -o "$TMP_DL" \
-    || { rm -f "$TMP_DL"; die "No se pudo descargar ${fname} (¿hay Internet?)."; }
-  actual_sha="$(sha256sum "$TMP_DL" | awk '{print $1}')"
-  [[ "$actual_sha" == "$expected_sha" ]] \
-    || { rm -f "$TMP_DL"; die "La verificación SHA-256 de ${fname} falló; no se instaló nada."; }
-  root install -m 0644 "$TMP_DL" "${VISOR_DIR}/${fname}"
-  rm -f "$TMP_DL"
-done
 
 # ---------- Mosquitto: listener WebSockets ----------
 
