@@ -1,0 +1,210 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 372" font-family="Helvetica, Arial, sans-serif">
+<rect width="1000" height="372" fill="#ffffff"/>
+<text x="500" y="30" text-anchor="middle" font-size="19" font-weight="bold" fill="#1d2d44">Anatomía del payload — Yubox Industrial + HDC2080 (JSON en ASCII)</text>
+<rect x="25" y="96" width="19" height="46" fill="#e9ecef" stroke="#adb5bd" stroke-width="0.6"/>
+<text x="34.5" y="117" text-anchor="middle" font-size="14" font-family="Menlo, Consolas, monospace" fill="#6c757d" font-weight="bold">{</text>
+<text x="34.5" y="134" text-anchor="middle" font-size="8" font-family="Menlo, Consolas, monospace" fill="#6c757d" opacity="0.75">7B</text>
+<rect x="44" y="96" width="19" height="46" fill="#e9ecef" stroke="#adb5bd" stroke-width="0.6"/>
+<text x="53.5" y="117" text-anchor="middle" font-size="14" font-family="Menlo, Consolas, monospace" fill="#6c757d" font-weight="bold">&quot;</text>
+<text x="53.5" y="134" text-anchor="middle" font-size="8" font-family="Menlo, Consolas, monospace" fill="#6c757d" opacity="0.75">22</text>
+<rect x="63" y="96" width="19" height="46" fill="#e9ecef" stroke="#adb5bd" stroke-width="0.6"/>
+<text x="72.5" y="117" text-anchor="middle" font-size="14" font-family="Menlo, Consolas, monospace" fill="#6c757d" font-weight="bold">t</text>
+<text x="72.5" y="134" text-anchor="middle" font-size="8" font-family="Menlo, Consolas, monospace" fill="#6c757d" opacity="0.75">74</text>
+<rect x="82" y="96" width="19" height="46" fill="#e9ecef" stroke="#adb5bd" stroke-width="0.6"/>
+<text x="91.5" y="117" text-anchor="middle" font-size="14" font-family="Menlo, Consolas, monospace" fill="#6c757d" font-weight="bold">s</text>
+<text x="91.5" y="134" text-anchor="middle" font-size="8" font-family="Menlo, Consolas, monospace" fill="#6c757d" opacity="0.75">73</text>
+<rect x="101" y="96" width="19" height="46" fill="#e9ecef" stroke="#adb5bd" stroke-width="0.6"/>
+<text x="110.5" y="117" text-anchor="middle" font-size="14" font-family="Menlo, Consolas, monospace" fill="#6c757d" font-weight="bold">&quot;</text>
+<text x="110.5" y="134" text-anchor="middle" font-size="8" font-family="Menlo, Consolas, monospace" fill="#6c757d" opacity="0.75">22</text>
+<rect x="120" y="96" width="19" height="46" fill="#e9ecef" stroke="#adb5bd" stroke-width="0.6"/>
+<text x="129.5" y="117" text-anchor="middle" font-size="14" font-family="Menlo, Consolas, monospace" fill="#6c757d" font-weight="bold">:</text>
+<text x="129.5" y="134" text-anchor="middle" font-size="8" font-family="Menlo, Consolas, monospace" fill="#6c757d" opacity="0.75">3A</text>
+<rect x="25" y="96" width="114" height="46" fill="none" stroke="#adb5bd" stroke-width="1.6"/>
+<text x="82" y="158" text-anchor="middle" font-size="10.5" fill="#6c757d">6 B</text>
+<rect x="139" y="96" width="19" height="46" fill="#d9efe0" stroke="#2b7a4b" stroke-width="0.6"/>
+<text x="148.5" y="117" text-anchor="middle" font-size="14" font-family="Menlo, Consolas, monospace" fill="#20603a" font-weight="bold">1</text>
+<text x="148.5" y="134" text-anchor="middle" font-size="8" font-family="Menlo, Consolas, monospace" fill="#20603a" opacity="0.75">31</text>
+<rect x="158" y="96" width="19" height="46" fill="#d9efe0" stroke="#2b7a4b" stroke-width="0.6"/>
+<text x="167.5" y="117" text-anchor="middle" font-size="14" font-family="Menlo, Consolas, monospace" fill="#20603a" font-weight="bold">7</text>
+<text x="167.5" y="134" text-anchor="middle" font-size="8" font-family="Menlo, Consolas, monospace" fill="#20603a" opacity="0.75">37</text>
+<rect x="177" y="96" width="19" height="46" fill="#d9efe0" stroke="#2b7a4b" stroke-width="0.6"/>
+<text x="186.5" y="117" text-anchor="middle" font-size="14" font-family="Menlo, Consolas, monospace" fill="#20603a" font-weight="bold">8</text>
+<text x="186.5" y="134" text-anchor="middle" font-size="8" font-family="Menlo, Consolas, monospace" fill="#20603a" opacity="0.75">38</text>
+<rect x="196" y="96" width="19" height="46" fill="#d9efe0" stroke="#2b7a4b" stroke-width="0.6"/>
+<text x="205.5" y="117" text-anchor="middle" font-size="14" font-family="Menlo, Consolas, monospace" fill="#20603a" font-weight="bold">5</text>
+<text x="205.5" y="134" text-anchor="middle" font-size="8" font-family="Menlo, Consolas, monospace" fill="#20603a" opacity="0.75">35</text>
+<rect x="215" y="96" width="19" height="46" fill="#d9efe0" stroke="#2b7a4b" stroke-width="0.6"/>
+<text x="224.5" y="117" text-anchor="middle" font-size="14" font-family="Menlo, Consolas, monospace" fill="#20603a" font-weight="bold">4</text>
+<text x="224.5" y="134" text-anchor="middle" font-size="8" font-family="Menlo, Consolas, monospace" fill="#20603a" opacity="0.75">34</text>
+<rect x="234" y="96" width="19" height="46" fill="#d9efe0" stroke="#2b7a4b" stroke-width="0.6"/>
+<text x="243.5" y="117" text-anchor="middle" font-size="14" font-family="Menlo, Consolas, monospace" fill="#20603a" font-weight="bold">6</text>
+<text x="243.5" y="134" text-anchor="middle" font-size="8" font-family="Menlo, Consolas, monospace" fill="#20603a" opacity="0.75">36</text>
+<rect x="253" y="96" width="19" height="46" fill="#d9efe0" stroke="#2b7a4b" stroke-width="0.6"/>
+<text x="262.5" y="117" text-anchor="middle" font-size="14" font-family="Menlo, Consolas, monospace" fill="#20603a" font-weight="bold">7</text>
+<text x="262.5" y="134" text-anchor="middle" font-size="8" font-family="Menlo, Consolas, monospace" fill="#20603a" opacity="0.75">37</text>
+<rect x="272" y="96" width="19" height="46" fill="#d9efe0" stroke="#2b7a4b" stroke-width="0.6"/>
+<text x="281.5" y="117" text-anchor="middle" font-size="14" font-family="Menlo, Consolas, monospace" fill="#20603a" font-weight="bold">2</text>
+<text x="281.5" y="134" text-anchor="middle" font-size="8" font-family="Menlo, Consolas, monospace" fill="#20603a" opacity="0.75">32</text>
+<rect x="291" y="96" width="19" height="46" fill="#d9efe0" stroke="#2b7a4b" stroke-width="0.6"/>
+<text x="300.5" y="117" text-anchor="middle" font-size="14" font-family="Menlo, Consolas, monospace" fill="#20603a" font-weight="bold">5</text>
+<text x="300.5" y="134" text-anchor="middle" font-size="8" font-family="Menlo, Consolas, monospace" fill="#20603a" opacity="0.75">35</text>
+<rect x="310" y="96" width="19" height="46" fill="#d9efe0" stroke="#2b7a4b" stroke-width="0.6"/>
+<text x="319.5" y="117" text-anchor="middle" font-size="14" font-family="Menlo, Consolas, monospace" fill="#20603a" font-weight="bold">4</text>
+<text x="319.5" y="134" text-anchor="middle" font-size="8" font-family="Menlo, Consolas, monospace" fill="#20603a" opacity="0.75">34</text>
+<rect x="329" y="96" width="19" height="46" fill="#d9efe0" stroke="#2b7a4b" stroke-width="0.6"/>
+<text x="338.5" y="117" text-anchor="middle" font-size="14" font-family="Menlo, Consolas, monospace" fill="#20603a" font-weight="bold">0</text>
+<text x="338.5" y="134" text-anchor="middle" font-size="8" font-family="Menlo, Consolas, monospace" fill="#20603a" opacity="0.75">30</text>
+<rect x="348" y="96" width="19" height="46" fill="#d9efe0" stroke="#2b7a4b" stroke-width="0.6"/>
+<text x="357.5" y="117" text-anchor="middle" font-size="14" font-family="Menlo, Consolas, monospace" fill="#20603a" font-weight="bold">0</text>
+<text x="357.5" y="134" text-anchor="middle" font-size="8" font-family="Menlo, Consolas, monospace" fill="#20603a" opacity="0.75">30</text>
+<rect x="367" y="96" width="19" height="46" fill="#d9efe0" stroke="#2b7a4b" stroke-width="0.6"/>
+<text x="376.5" y="117" text-anchor="middle" font-size="14" font-family="Menlo, Consolas, monospace" fill="#20603a" font-weight="bold">0</text>
+<text x="376.5" y="134" text-anchor="middle" font-size="8" font-family="Menlo, Consolas, monospace" fill="#20603a" opacity="0.75">30</text>
+<rect x="139" y="96" width="247" height="46" fill="none" stroke="#2b7a4b" stroke-width="1.6"/>
+<text x="262.5" y="70" text-anchor="middle" font-size="13" font-weight="bold" fill="#2b7a4b">Hora UTC (epoch, ms)</text>
+<line x1="141" y1="78" x2="384" y2="78" stroke="#2b7a4b" stroke-width="1.4"/>
+<line x1="141" y1="78" x2="141" y2="84" stroke="#2b7a4b" stroke-width="1.4"/>
+<line x1="384" y1="78" x2="384" y2="84" stroke="#2b7a4b" stroke-width="1.4"/>
+<text x="262.5" y="158" text-anchor="middle" font-size="10.5" fill="#6c757d">13 B</text>
+<rect x="386" y="96" width="19" height="46" fill="#e9ecef" stroke="#adb5bd" stroke-width="0.6"/>
+<text x="395.5" y="117" text-anchor="middle" font-size="14" font-family="Menlo, Consolas, monospace" fill="#6c757d" font-weight="bold">,</text>
+<text x="395.5" y="134" text-anchor="middle" font-size="8" font-family="Menlo, Consolas, monospace" fill="#6c757d" opacity="0.75">2C</text>
+<rect x="405" y="96" width="19" height="46" fill="#e9ecef" stroke="#adb5bd" stroke-width="0.6"/>
+<text x="414.5" y="117" text-anchor="middle" font-size="14" font-family="Menlo, Consolas, monospace" fill="#6c757d" font-weight="bold">&quot;</text>
+<text x="414.5" y="134" text-anchor="middle" font-size="8" font-family="Menlo, Consolas, monospace" fill="#6c757d" opacity="0.75">22</text>
+<rect x="424" y="96" width="19" height="46" fill="#e9ecef" stroke="#adb5bd" stroke-width="0.6"/>
+<text x="433.5" y="117" text-anchor="middle" font-size="14" font-family="Menlo, Consolas, monospace" fill="#6c757d" font-weight="bold">t</text>
+<text x="433.5" y="134" text-anchor="middle" font-size="8" font-family="Menlo, Consolas, monospace" fill="#6c757d" opacity="0.75">74</text>
+<rect x="443" y="96" width="19" height="46" fill="#e9ecef" stroke="#adb5bd" stroke-width="0.6"/>
+<text x="452.5" y="117" text-anchor="middle" font-size="14" font-family="Menlo, Consolas, monospace" fill="#6c757d" font-weight="bold">e</text>
+<text x="452.5" y="134" text-anchor="middle" font-size="8" font-family="Menlo, Consolas, monospace" fill="#6c757d" opacity="0.75">65</text>
+<rect x="462" y="96" width="19" height="46" fill="#e9ecef" stroke="#adb5bd" stroke-width="0.6"/>
+<text x="471.5" y="117" text-anchor="middle" font-size="14" font-family="Menlo, Consolas, monospace" fill="#6c757d" font-weight="bold">m</text>
+<text x="471.5" y="134" text-anchor="middle" font-size="8" font-family="Menlo, Consolas, monospace" fill="#6c757d" opacity="0.75">6D</text>
+<rect x="481" y="96" width="19" height="46" fill="#e9ecef" stroke="#adb5bd" stroke-width="0.6"/>
+<text x="490.5" y="117" text-anchor="middle" font-size="14" font-family="Menlo, Consolas, monospace" fill="#6c757d" font-weight="bold">p</text>
+<text x="490.5" y="134" text-anchor="middle" font-size="8" font-family="Menlo, Consolas, monospace" fill="#6c757d" opacity="0.75">70</text>
+<rect x="500" y="96" width="19" height="46" fill="#e9ecef" stroke="#adb5bd" stroke-width="0.6"/>
+<text x="509.5" y="117" text-anchor="middle" font-size="14" font-family="Menlo, Consolas, monospace" fill="#6c757d" font-weight="bold">&quot;</text>
+<text x="509.5" y="134" text-anchor="middle" font-size="8" font-family="Menlo, Consolas, monospace" fill="#6c757d" opacity="0.75">22</text>
+<rect x="519" y="96" width="19" height="46" fill="#e9ecef" stroke="#adb5bd" stroke-width="0.6"/>
+<text x="528.5" y="117" text-anchor="middle" font-size="14" font-family="Menlo, Consolas, monospace" fill="#6c757d" font-weight="bold">:</text>
+<text x="528.5" y="134" text-anchor="middle" font-size="8" font-family="Menlo, Consolas, monospace" fill="#6c757d" opacity="0.75">3A</text>
+<rect x="386" y="96" width="152" height="46" fill="none" stroke="#adb5bd" stroke-width="1.6"/>
+<text x="462" y="158" text-anchor="middle" font-size="10.5" fill="#6c757d">8 B</text>
+<rect x="538" y="96" width="19" height="46" fill="#f8dcda" stroke="#b52b27" stroke-width="0.6"/>
+<text x="547.5" y="117" text-anchor="middle" font-size="14" font-family="Menlo, Consolas, monospace" fill="#8f211e" font-weight="bold">3</text>
+<text x="547.5" y="134" text-anchor="middle" font-size="8" font-family="Menlo, Consolas, monospace" fill="#8f211e" opacity="0.75">33</text>
+<rect x="557" y="96" width="19" height="46" fill="#f8dcda" stroke="#b52b27" stroke-width="0.6"/>
+<text x="566.5" y="117" text-anchor="middle" font-size="14" font-family="Menlo, Consolas, monospace" fill="#8f211e" font-weight="bold">0</text>
+<text x="566.5" y="134" text-anchor="middle" font-size="8" font-family="Menlo, Consolas, monospace" fill="#8f211e" opacity="0.75">30</text>
+<rect x="576" y="96" width="19" height="46" fill="#f8dcda" stroke="#b52b27" stroke-width="0.6"/>
+<text x="585.5" y="117" text-anchor="middle" font-size="14" font-family="Menlo, Consolas, monospace" fill="#8f211e" font-weight="bold">.</text>
+<text x="585.5" y="134" text-anchor="middle" font-size="8" font-family="Menlo, Consolas, monospace" fill="#8f211e" opacity="0.75">2E</text>
+<rect x="595" y="96" width="19" height="46" fill="#f8dcda" stroke="#b52b27" stroke-width="0.6"/>
+<text x="604.5" y="117" text-anchor="middle" font-size="14" font-family="Menlo, Consolas, monospace" fill="#8f211e" font-weight="bold">1</text>
+<text x="604.5" y="134" text-anchor="middle" font-size="8" font-family="Menlo, Consolas, monospace" fill="#8f211e" opacity="0.75">31</text>
+<rect x="614" y="96" width="19" height="46" fill="#f8dcda" stroke="#b52b27" stroke-width="0.6"/>
+<text x="623.5" y="117" text-anchor="middle" font-size="14" font-family="Menlo, Consolas, monospace" fill="#8f211e" font-weight="bold">6</text>
+<text x="623.5" y="134" text-anchor="middle" font-size="8" font-family="Menlo, Consolas, monospace" fill="#8f211e" opacity="0.75">36</text>
+<rect x="633" y="96" width="19" height="46" fill="#f8dcda" stroke="#b52b27" stroke-width="0.6"/>
+<text x="642.5" y="117" text-anchor="middle" font-size="14" font-family="Menlo, Consolas, monospace" fill="#8f211e" font-weight="bold">0</text>
+<text x="642.5" y="134" text-anchor="middle" font-size="8" font-family="Menlo, Consolas, monospace" fill="#8f211e" opacity="0.75">30</text>
+<rect x="652" y="96" width="19" height="46" fill="#f8dcda" stroke="#b52b27" stroke-width="0.6"/>
+<text x="661.5" y="117" text-anchor="middle" font-size="14" font-family="Menlo, Consolas, monospace" fill="#8f211e" font-weight="bold">7</text>
+<text x="661.5" y="134" text-anchor="middle" font-size="8" font-family="Menlo, Consolas, monospace" fill="#8f211e" opacity="0.75">37</text>
+<rect x="671" y="96" width="19" height="46" fill="#f8dcda" stroke="#b52b27" stroke-width="0.6"/>
+<text x="680.5" y="117" text-anchor="middle" font-size="14" font-family="Menlo, Consolas, monospace" fill="#8f211e" font-weight="bold">5</text>
+<text x="680.5" y="134" text-anchor="middle" font-size="8" font-family="Menlo, Consolas, monospace" fill="#8f211e" opacity="0.75">35</text>
+<rect x="538" y="96" width="152" height="46" fill="none" stroke="#b52b27" stroke-width="1.6"/>
+<text x="614" y="70" text-anchor="middle" font-size="13" font-weight="bold" fill="#b52b27">Temperatura (°C)</text>
+<line x1="540" y1="78" x2="688" y2="78" stroke="#b52b27" stroke-width="1.4"/>
+<line x1="540" y1="78" x2="540" y2="84" stroke="#b52b27" stroke-width="1.4"/>
+<line x1="688" y1="78" x2="688" y2="84" stroke="#b52b27" stroke-width="1.4"/>
+<text x="614" y="158" text-anchor="middle" font-size="10.5" fill="#6c757d">8 B</text>
+<rect x="690" y="96" width="19" height="46" fill="#e9ecef" stroke="#adb5bd" stroke-width="0.6"/>
+<text x="699.5" y="117" text-anchor="middle" font-size="14" font-family="Menlo, Consolas, monospace" fill="#6c757d" font-weight="bold">,</text>
+<text x="699.5" y="134" text-anchor="middle" font-size="8" font-family="Menlo, Consolas, monospace" fill="#6c757d" opacity="0.75">2C</text>
+<rect x="709" y="96" width="19" height="46" fill="#e9ecef" stroke="#adb5bd" stroke-width="0.6"/>
+<text x="718.5" y="117" text-anchor="middle" font-size="14" font-family="Menlo, Consolas, monospace" fill="#6c757d" font-weight="bold">&quot;</text>
+<text x="718.5" y="134" text-anchor="middle" font-size="8" font-family="Menlo, Consolas, monospace" fill="#6c757d" opacity="0.75">22</text>
+<rect x="728" y="96" width="19" height="46" fill="#e9ecef" stroke="#adb5bd" stroke-width="0.6"/>
+<text x="737.5" y="117" text-anchor="middle" font-size="14" font-family="Menlo, Consolas, monospace" fill="#6c757d" font-weight="bold">h</text>
+<text x="737.5" y="134" text-anchor="middle" font-size="8" font-family="Menlo, Consolas, monospace" fill="#6c757d" opacity="0.75">68</text>
+<rect x="747" y="96" width="19" height="46" fill="#e9ecef" stroke="#adb5bd" stroke-width="0.6"/>
+<text x="756.5" y="117" text-anchor="middle" font-size="14" font-family="Menlo, Consolas, monospace" fill="#6c757d" font-weight="bold">u</text>
+<text x="756.5" y="134" text-anchor="middle" font-size="8" font-family="Menlo, Consolas, monospace" fill="#6c757d" opacity="0.75">75</text>
+<rect x="766" y="96" width="19" height="46" fill="#e9ecef" stroke="#adb5bd" stroke-width="0.6"/>
+<text x="775.5" y="117" text-anchor="middle" font-size="14" font-family="Menlo, Consolas, monospace" fill="#6c757d" font-weight="bold">m</text>
+<text x="775.5" y="134" text-anchor="middle" font-size="8" font-family="Menlo, Consolas, monospace" fill="#6c757d" opacity="0.75">6D</text>
+<rect x="785" y="96" width="19" height="46" fill="#e9ecef" stroke="#adb5bd" stroke-width="0.6"/>
+<text x="794.5" y="117" text-anchor="middle" font-size="14" font-family="Menlo, Consolas, monospace" fill="#6c757d" font-weight="bold">&quot;</text>
+<text x="794.5" y="134" text-anchor="middle" font-size="8" font-family="Menlo, Consolas, monospace" fill="#6c757d" opacity="0.75">22</text>
+<rect x="804" y="96" width="19" height="46" fill="#e9ecef" stroke="#adb5bd" stroke-width="0.6"/>
+<text x="813.5" y="117" text-anchor="middle" font-size="14" font-family="Menlo, Consolas, monospace" fill="#6c757d" font-weight="bold">:</text>
+<text x="813.5" y="134" text-anchor="middle" font-size="8" font-family="Menlo, Consolas, monospace" fill="#6c757d" opacity="0.75">3A</text>
+<rect x="690" y="96" width="133" height="46" fill="none" stroke="#adb5bd" stroke-width="1.6"/>
+<text x="756.5" y="158" text-anchor="middle" font-size="10.5" fill="#6c757d">7 B</text>
+<rect x="823" y="96" width="19" height="46" fill="#d8e8f9" stroke="#1d5fa8" stroke-width="0.6"/>
+<text x="832.5" y="117" text-anchor="middle" font-size="14" font-family="Menlo, Consolas, monospace" fill="#174b85" font-weight="bold">3</text>
+<text x="832.5" y="134" text-anchor="middle" font-size="8" font-family="Menlo, Consolas, monospace" fill="#174b85" opacity="0.75">33</text>
+<rect x="842" y="96" width="19" height="46" fill="#d8e8f9" stroke="#1d5fa8" stroke-width="0.6"/>
+<text x="851.5" y="117" text-anchor="middle" font-size="14" font-family="Menlo, Consolas, monospace" fill="#174b85" font-weight="bold">7</text>
+<text x="851.5" y="134" text-anchor="middle" font-size="8" font-family="Menlo, Consolas, monospace" fill="#174b85" opacity="0.75">37</text>
+<rect x="861" y="96" width="19" height="46" fill="#d8e8f9" stroke="#1d5fa8" stroke-width="0.6"/>
+<text x="870.5" y="117" text-anchor="middle" font-size="14" font-family="Menlo, Consolas, monospace" fill="#174b85" font-weight="bold">.</text>
+<text x="870.5" y="134" text-anchor="middle" font-size="8" font-family="Menlo, Consolas, monospace" fill="#174b85" opacity="0.75">2E</text>
+<rect x="880" y="96" width="19" height="46" fill="#d8e8f9" stroke="#1d5fa8" stroke-width="0.6"/>
+<text x="889.5" y="117" text-anchor="middle" font-size="14" font-family="Menlo, Consolas, monospace" fill="#174b85" font-weight="bold">1</text>
+<text x="889.5" y="134" text-anchor="middle" font-size="8" font-family="Menlo, Consolas, monospace" fill="#174b85" opacity="0.75">31</text>
+<rect x="899" y="96" width="19" height="46" fill="#d8e8f9" stroke="#1d5fa8" stroke-width="0.6"/>
+<text x="908.5" y="117" text-anchor="middle" font-size="14" font-family="Menlo, Consolas, monospace" fill="#174b85" font-weight="bold">0</text>
+<text x="908.5" y="134" text-anchor="middle" font-size="8" font-family="Menlo, Consolas, monospace" fill="#174b85" opacity="0.75">30</text>
+<rect x="918" y="96" width="19" height="46" fill="#d8e8f9" stroke="#1d5fa8" stroke-width="0.6"/>
+<text x="927.5" y="117" text-anchor="middle" font-size="14" font-family="Menlo, Consolas, monospace" fill="#174b85" font-weight="bold">4</text>
+<text x="927.5" y="134" text-anchor="middle" font-size="8" font-family="Menlo, Consolas, monospace" fill="#174b85" opacity="0.75">34</text>
+<rect x="937" y="96" width="19" height="46" fill="#d8e8f9" stroke="#1d5fa8" stroke-width="0.6"/>
+<text x="946.5" y="117" text-anchor="middle" font-size="14" font-family="Menlo, Consolas, monospace" fill="#174b85" font-weight="bold">8</text>
+<text x="946.5" y="134" text-anchor="middle" font-size="8" font-family="Menlo, Consolas, monospace" fill="#174b85" opacity="0.75">38</text>
+<rect x="823" y="96" width="133" height="46" fill="none" stroke="#1d5fa8" stroke-width="1.6"/>
+<text x="889.5" y="70" text-anchor="middle" font-size="13" font-weight="bold" fill="#1d5fa8">Humedad (%HR)</text>
+<line x1="825" y1="78" x2="954" y2="78" stroke="#1d5fa8" stroke-width="1.4"/>
+<line x1="825" y1="78" x2="825" y2="84" stroke="#1d5fa8" stroke-width="1.4"/>
+<line x1="954" y1="78" x2="954" y2="84" stroke="#1d5fa8" stroke-width="1.4"/>
+<text x="889.5" y="158" text-anchor="middle" font-size="10.5" fill="#6c757d">7 B</text>
+<rect x="956" y="96" width="19" height="46" fill="#e9ecef" stroke="#adb5bd" stroke-width="0.6"/>
+<text x="965.5" y="117" text-anchor="middle" font-size="14" font-family="Menlo, Consolas, monospace" fill="#6c757d" font-weight="bold">}</text>
+<text x="965.5" y="134" text-anchor="middle" font-size="8" font-family="Menlo, Consolas, monospace" fill="#6c757d" opacity="0.75">7D</text>
+<rect x="956" y="96" width="19" height="46" fill="none" stroke="#adb5bd" stroke-width="1.6"/>
+<text x="965.5" y="158" text-anchor="middle" font-size="10.5" fill="#6c757d">1 B</text>
+<line x1="25" y1="172" x2="975" y2="172" stroke="#1d2d44" stroke-width="1.2"/>
+<line x1="25" y1="172" x2="25" y2="167" stroke="#1d2d44" stroke-width="1.2"/>
+<line x1="975" y1="172" x2="975" y2="167" stroke="#1d2d44" stroke-width="1.2"/>
+<text x="500" y="188" text-anchor="middle" font-size="12.5" font-weight="bold" fill="#1d2d44">Total: 50 bytes — 28 de dato útil, 22 de envoltorio JSON (llaves, comillas y nombres de campo)</text>
+<text x="25" y="210" font-size="13" font-weight="bold" fill="#1d2d44">El mismo dato, empaquetado en binario (como el ejemplo MKRWAN1310):</text>
+<rect x="25" y="218" width="76" height="34" fill="#d9efe0" stroke="#2b7a4b" stroke-width="1.6"/>
+<line x1="44" y1="218" x2="44" y2="252" stroke="#2b7a4b" stroke-width="0.6"/>
+<line x1="63" y1="218" x2="63" y2="252" stroke="#2b7a4b" stroke-width="0.6"/>
+<line x1="82" y1="218" x2="82" y2="252" stroke="#2b7a4b" stroke-width="0.6"/>
+<text x="63" y="239" text-anchor="middle" font-size="11.5" font-weight="bold" font-family="Menlo, Consolas, monospace" fill="#20603a">ts</text>
+<text x="63" y="266" text-anchor="middle" font-size="10.5" fill="#6c757d">4 B</text>
+<rect x="101" y="218" width="38" height="34" fill="#f8dcda" stroke="#b52b27" stroke-width="1.6"/>
+<line x1="120" y1="218" x2="120" y2="252" stroke="#b52b27" stroke-width="0.6"/>
+<text x="120" y="239" text-anchor="middle" font-size="11.5" font-weight="bold" font-family="Menlo, Consolas, monospace" fill="#8f211e">temp</text>
+<text x="120" y="266" text-anchor="middle" font-size="10.5" fill="#6c757d">2 B</text>
+<rect x="139" y="218" width="38" height="34" fill="#d8e8f9" stroke="#1d5fa8" stroke-width="1.6"/>
+<line x1="158" y1="218" x2="158" y2="252" stroke="#1d5fa8" stroke-width="0.6"/>
+<text x="158" y="239" text-anchor="middle" font-size="11.5" font-weight="bold" font-family="Menlo, Consolas, monospace" fill="#174b85">hum</text>
+<text x="158" y="266" text-anchor="middle" font-size="10.5" fill="#6c757d">2 B</text>
+<text x="191" y="233" font-size="12.5" font-weight="bold" fill="#1d2d44">8 bytes — 6× menos tiempo en el aire</text>
+<text x="191" y="249" font-size="10.5" fill="#6c757d">ts: uint32 (época en segundos) · temp: int16 (centésimas de °C) · hum: uint16 (centésimas de %)</text>
+<rect x="25" y="290" width="14" height="14" fill="#e9ecef" stroke="#adb5bd" stroke-width="1.2"/>
+<text x="45" y="301.5" font-size="11.5" fill="#343a40">Envoltorio JSON (overhead)</text>
+<rect x="234.20000000000002" y="290" width="14" height="14" fill="#d9efe0" stroke="#2b7a4b" stroke-width="1.2"/>
+<text x="254.20000000000002" y="301.5" font-size="11.5" fill="#343a40">Timestamp</text>
+<rect x="338" y="290" width="14" height="14" fill="#f8dcda" stroke="#b52b27" stroke-width="1.2"/>
+<text x="358" y="301.5" font-size="11.5" fill="#343a40">Temperatura</text>
+<rect x="454.2" y="290" width="14" height="14" fill="#d8e8f9" stroke="#1d5fa8" stroke-width="1.2"/>
+<text x="474.2" y="301.5" font-size="11.5" fill="#343a40">Humedad</text>
+<text x="975" y="301.5" text-anchor="end" font-size="10" fill="#adb5bd">Uplink real del curso — «LoRaWAN para todos», 2ª ed.</text>
+</svg>
