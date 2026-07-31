@@ -4,3 +4,6 @@ arduino_secrets.h
 
 # macOS
 .DS_Store
+
+# Material de trabajo temporal (clones de librerías, etc.)
+_tmp/
