@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Visor LoRaWAN — Temperatura y Humedad</title>
+<!--
+  Visor web del curso LoRaWAN: se sirve desde el propio gateway (RPi) y se
+  conecta como cliente MQTT sobre WebSockets al broker Mosquitto local, donde
+  ChirpStack publica cada uplink ya decodificado por el payload codec.
+
+  Cadena completa que ve el alumno:
+    nodo -> radio LoRa -> gateway -> ChirpStack (codec) -> MQTT -> este visor
+
+  No requiere backend: es una página estática. Las librerías (mqtt.js y
+  Chart.js) las instala localmente el script instalar-visor.sh, de modo que
+  el aula no necesita salida a Internet.
+-->
+<script>
+  // Puerto WebSockets por defecto; instalar-visor.sh puede sobreescribirlo
+  // generando un config.js junto a esta página.
+  window.VISOR_WS_PORT = 9001;
+</script>
+<script src="config.js"></script>
+<script src="mqtt.min.js"></script>
+<script src="chart.umd.min.js"></script>
+<style>
+  :root {
+    --temp: #d9534f;
+    --hum:  #2a7fd4;
+    --gris: #6c757d;
+    --borde: #dee2e6;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: #f4f6f8;
+    color: #212529;
+  }
+  header {
+    background: #1d2d44;
+    color: #fff;
+    padding: 0.8rem 1.2rem;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.8rem;
+  }
+  header h1 { font-size: 1.15rem; margin: 0; font-weight: 600; }
+  #estado {
+    margin-left: auto;
+    font-size: 0.85rem;
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+  }
+  #punto {
+    width: 10px; height: 10px; border-radius: 50%;
+    background: #dc3545;
+    display: inline-block;
+  }
+  #punto.ok { background: #28a745; }
+  main {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 1rem 1.2rem 2rem;
+  }
+  .panel {
+    background: #fff;
+    border: 1px solid var(--borde);
+    border-radius: 8px;
+    padding: 1rem;
+    margin-top: 1rem;
+  }
+  .fila-controles {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.8rem;
+    align-items: center;
+  }
+  .fila-controles label { font-size: 0.9rem; color: var(--gris); }
+  select {
+    font-size: 0.95rem;
+    padding: 0.3rem 0.5rem;
+    border: 1px solid var(--borde);
+    border-radius: 6px;
+    background: #fff;
+  }
+  .lecturas {
+    display: flex;
+    gap: 1rem;
+    margin-left: auto;
+  }
+  .lectura { text-align: right; }
+  .lectura .valor { font-size: 1.6rem; font-weight: 700; }
+  .lectura.temp .valor { color: var(--temp); }
+  .lectura.hum  .valor { color: var(--hum); }
+  .lectura .etiqueta { font-size: 0.75rem; color: var(--gris); }
+  #grafica-cont { position: relative; height: 340px; margin-top: 0.8rem; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.9rem;
+  }
+  th, td {
+    text-align: left;
+    padding: 0.45rem 0.6rem;
+    border-bottom: 1px solid var(--borde);
+    white-space: nowrap;
+  }
+  th { color: var(--gris); font-weight: 600; font-size: 0.8rem; }
+  td.mono { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 0.85rem; }
+  tbody tr { cursor: pointer; }
+  tbody tr:hover { background: #f1f5f9; }
+  tbody tr.activo { background: #e8f0fe; }
+  #vacio { color: var(--gris); font-size: 0.9rem; }
+  footer {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 0 1.2rem 1.5rem;
+    color: var(--gris);
+    font-size: 0.8rem;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Visor LoRaWAN — Temperatura y Humedad</h1>
+  <div id="estado"><span id="punto"></span><span id="estado-txt">Conectando…</span></div>
+</header>
+
+<main>
+  <div class="panel">
+    <div class="fila-controles">
+      <label for="sel-dispositivo">Dispositivo:</label>
+      <select id="sel-dispositivo"></select>
+      <div class="lecturas">
+        <div class="lectura temp">
+          <div class="valor" id="val-temp">–</div>
+          <div class="etiqueta">Temperatura °C</div>
+        </div>
+        <div class="lectura hum">
+          <div class="valor" id="val-hum">–</div>
+          <div class="etiqueta">Humedad %HR</div>
+        </div>
+      </div>
+    </div>
+    <div id="grafica-cont"><canvas id="grafica"></canvas></div>
+  </div>
+
+  <div class="panel">
+    <p id="vacio">Esperando el primer uplink… (los nodos transmiten según su intervalo configurado)</p>
+    <table id="tabla" hidden>
+      <thead>
+        <tr>
+          <th>Dispositivo</th><th>DevEUI</th><th>Temp</th><th>Hum</th>
+          <th>RSSI</th><th>SNR</th><th>FCnt</th><th>Última lectura</th>
+        </tr>
+      </thead>
+      <tbody id="tabla-cuerpo"></tbody>
+    </table>
+  </div>
+</main>
+
+<footer>
+  Broker: <span id="pie-broker"></span> · Topic: application/+/device/+/event/up ·
+  Mensajes recibidos: <span id="pie-contador">0</span>
+</footer>
+
+<script>
+"use strict";
+
+var MAX_PUNTOS = 360;   // puntos retenidos por dispositivo en la gráfica
+
+var dispositivos = {};  // devEui -> { nombre, labels, temp, hum, ultimo }
+var seleccionado = null;
+var contador = 0;
+
+// ---------- Gráfica ----------
+
+var grafica = new Chart(document.getElementById("grafica"), {
+  type: "line",
+  data: {
+    labels: [],
+    datasets: [
+      {
+        label: "Temperatura (°C)",
+        data: [],
+        borderColor: "#d9534f",
+        backgroundColor: "rgba(217,83,79,0.12)",
+        yAxisID: "yTemp",
+        tension: 0.25,
+        pointRadius: 2
+      },
+      {
+        label: "Humedad (%HR)",
+        data: [],
+        borderColor: "#2a7fd4",
+        backgroundColor: "rgba(42,127,212,0.12)",
+        yAxisID: "yHum",
+        tension: 0.25,
+        pointRadius: 2
+      }
+    ]
+  },
+  options: {
+    responsive: true,
+    maintainAspectRatio: false,
+    animation: false,
+    interaction: { mode: "index", intersect: false },
+    scales: {
+      x: { ticks: { autoSkip: true, maxTicksLimit: 12 } },
+      yTemp: {
+        type: "linear", position: "left",
+        title: { display: true, text: "°C" }
+      },
+      yHum: {
+        type: "linear", position: "right",
+        min: 0, max: 100,
+        title: { display: true, text: "%HR" },
+        grid: { drawOnChartArea: false }
+      }
+    }
+  }
+});
+
+// ---------- Utilidades ----------
+
+function num(v) {
+  return (typeof v === "number" && isFinite(v)) ? v : null;
+}
+
+function horaLocal(iso) {
+  var d = iso ? new Date(iso) : new Date();
+  return isNaN(d.getTime()) ? new Date().toLocaleTimeString()
+                            : d.toLocaleTimeString();
+}
+
+function seleccionar(devEui) {
+  seleccionado = devEui;
+  var d = dispositivos[devEui];
+  if (!d) return;
+  grafica.data.labels = d.labels;
+  grafica.data.datasets[0].data = d.temp;
+  grafica.data.datasets[1].data = d.hum;
+  grafica.update("none");
+  document.getElementById("sel-dispositivo").value = devEui;
+  refrescarActuales();
+  refrescarTabla();
+}
+
+function refrescarActuales() {
+  var d = dispositivos[seleccionado];
+  var u = d && d.ultimo;
+  document.getElementById("val-temp").textContent =
+    (u && u.temp !== null) ? u.temp.toFixed(1) : "–";
+  document.getElementById("val-hum").textContent =
+    (u && u.hum !== null) ? u.hum.toFixed(1) : "–";
+}
+
+function refrescarSelector() {
+  var sel = document.getElementById("sel-dispositivo");
+  sel.innerHTML = "";
+  Object.keys(dispositivos).forEach(function (eui) {
+    var opt = document.createElement("option");
+    opt.value = eui;
+    opt.textContent = dispositivos[eui].nombre + " (" + eui + ")";
+    sel.appendChild(opt);
+  });
+  if (seleccionado) sel.value = seleccionado;
+}
+
+function refrescarTabla() {
+  var cuerpo = document.getElementById("tabla-cuerpo");
+  cuerpo.innerHTML = "";
+  Object.keys(dispositivos).forEach(function (eui) {
+    var d = dispositivos[eui];
+    var u = d.ultimo;
+    var tr = document.createElement("tr");
+    if (eui === seleccionado) tr.className = "activo";
+    tr.innerHTML =
+      "<td>" + d.nombre + "</td>" +
+      '<td class="mono">' + eui + "</td>" +
+      "<td>" + (u.temp !== null ? u.temp.toFixed(2) + " °C" : "–") + "</td>" +
+      "<td>" + (u.hum !== null ? u.hum.toFixed(2) + " %" : "–") + "</td>" +
+      "<td>" + (u.rssi !== null ? u.rssi + " dBm" : "–") + "</td>" +
+      "<td>" + (u.snr !== null ? u.snr + " dB" : "–") + "</td>" +
+      "<td>" + (u.fcnt !== null ? u.fcnt : "–") + "</td>" +
+      "<td>" + u.hora + "</td>";
+    tr.addEventListener("click", function () { seleccionar(eui); });
+    cuerpo.appendChild(tr);
+  });
+  document.getElementById("vacio").hidden = Object.keys(dispositivos).length > 0;
+  document.getElementById("tabla").hidden = Object.keys(dispositivos).length === 0;
+}
+
+// ---------- Procesamiento de uplinks ----------
+
+function procesarUplink(topic, ev) {
+  var info = ev.deviceInfo || {};
+  var devEui = info.devEui || topic.split("/")[3] || "desconocido";
+  var obj = ev.object || {};
+
+  // Nombres según el codec del curso, con alternativas por si el codec
+  // publica los campos originales del firmware.
+  var temp = num(obj.temperatura); if (temp === null) temp = num(obj.temp);
+  var hum  = num(obj.humedad);     if (hum === null)  hum  = num(obj.hum);
+  if (temp === null && hum === null) return;   // uplink sin datos de interés
+
+  var esNuevo = !dispositivos[devEui];
+  if (esNuevo) {
+    dispositivos[devEui] = {
+      nombre: info.deviceName || devEui,
+      labels: [], temp: [], hum: [],
+      ultimo: {}
+    };
+  }
+  var d = dispositivos[devEui];
+  if (info.deviceName) d.nombre = info.deviceName;
+
+  var rx = (ev.rxInfo && ev.rxInfo[0]) || {};
+  d.ultimo = {
+    temp: temp,
+    hum: hum,
+    rssi: num(rx.rssi),
+    snr: num(rx.snr),
+    fcnt: num(ev.fCnt),
+    hora: horaLocal(ev.time)
+  };
+
+  d.labels.push(horaLocal(ev.time));
+  d.temp.push(temp);
+  d.hum.push(hum);
+  if (d.labels.length > MAX_PUNTOS) {
+    d.labels.shift(); d.temp.shift(); d.hum.shift();
+  }
+
+  if (esNuevo) {
+    refrescarSelector();
+    if (!seleccionado) seleccionar(devEui);
+  }
+  if (devEui === seleccionado) {
+    grafica.update("none");
+    refrescarActuales();
+  }
+  refrescarTabla();
+}
+
+// ---------- Conexión MQTT (WebSockets) ----------
+
+var urlBroker = "ws://" + location.hostname + ":" + window.VISOR_WS_PORT;
+document.getElementById("pie-broker").textContent = urlBroker;
+
+var cliente = mqtt.connect(urlBroker, { reconnectPeriod: 3000 });
+
+function ponerEstado(ok, texto) {
+  document.getElementById("punto").className = ok ? "ok" : "";
+  document.getElementById("estado-txt").textContent = texto;
+}
+
+cliente.on("connect", function () {
+  ponerEstado(true, "Conectado al broker");
+  cliente.subscribe("application/+/device/+/event/up");
+});
+cliente.on("reconnect", function () { ponerEstado(false, "Reconectando…"); });
+cliente.on("close", function () { ponerEstado(false, "Desconectado"); });
+cliente.on("error", function () { ponerEstado(false, "Error de conexión"); });
+
+cliente.on("message", function (topic, payload) {
+  var ev;
+  try { ev = JSON.parse(payload.toString()); } catch (e) { return; }
+  contador++;
+  document.getElementById("pie-contador").textContent = contador;
+  procesarUplink(topic, ev);
+});
+
+document.getElementById("sel-dispositivo").addEventListener("change", function () {
+  seleccionar(this.value);
+});
+</script>
+
+</body>
+</html>
